@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
-from models import db, User, Track, PlayHistory, Like
+from models import db, User, Track, PlayHistory, Like, upgrade_schema
 from concurrent.futures import ThreadPoolExecutor
 import requests
 import feedparser
@@ -16,6 +16,9 @@ app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 db.init_app(app)
+with app.app_context():
+    db.create_all()
+    upgrade_schema()
 
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -82,6 +85,27 @@ def api_songs():
     with ThreadPoolExecutor(max_workers=len(HOME_SECTION_TERMS)) as pool:
         sections = dict(zip(HOME_SECTION_TERMS, pool.map(fetch, HOME_SECTION_TERMS)))
     return jsonify({"sections": sections})
+
+
+# Local catalogue sections (Track.section) and the headings the SPA shows for them, in page order.
+LOCAL_SECTIONS = {
+    "trending": "Trending Now",
+    "viral": "Viral on Reels & Shorts",
+    "artist": "Artists",
+}
+
+
+@app.route("/api/home_sections")
+def api_home_sections():
+    """Locally hosted tracks (full MP3 + cover + Canvas loop), grouped by home-page section."""
+    tracks = (Track.query.filter(Track.approved.is_(True), Track.section.in_(LOCAL_SECTIONS))
+              .order_by(Track.play_count.desc(), Track.id).all())
+    grouped = {key: [] for key in LOCAL_SECTIONS}
+    for track in tracks:
+        grouped[track.section].append(track.to_dict())
+    return jsonify({
+        "sections": [{"key": key, "title": title, "tracks": grouped[key]} for key, title in LOCAL_SECTIONS.items()],
+    })
 
 
 LRCLIB_URL = "https://lrclib.net/api"
@@ -603,6 +627,4 @@ def dashboard():
 
 
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
     app.run(debug=True)

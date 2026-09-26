@@ -30,11 +30,59 @@ class Track(db.Model):
     play_count = db.Column(db.Integer, default=0)
     audio_file = db.Column(db.String(300))
     genre = db.Column(db.String(50), default="Other")
+    # Local catalogue media (see generate_media.py); URLs are site-relative, e.g. /static/media/...
+    album = db.Column(db.String(300))
+    cover = db.Column(db.String(500))
+    stream_url = db.Column(db.String(500), index=True)
+    video_url = db.Column(db.String(500))
+    duration_ms = db.Column(db.Integer)
+    section = db.Column(db.String(20), index=True)  # "trending" | "viral" | "artist"; NULL for plain uploads
 
     artist = db.relationship("User", backref="tracks")
 
+    def to_dict(self):
+        """Same shape as the normalized /api/search results, plus the local-only media fields.
+
+        The id is prefixed so local tracks never collide with iTunes ids in the frontend's liked/queue state.
+        """
+        return {
+            "id": f"local-{self.id}",
+            "title": self.title,
+            "artist": self.artist.username,
+            "album": self.album,
+            "cover": self.cover,
+            "stream_url": self.stream_url,
+            "video_url": self.video_url,
+            "duration": self.duration_ms,
+            "genre": self.genre,
+            "section": self.section,
+            "local": True,
+        }
+
     def __repr__(self):
         return f"<Track {self.title} by {self.artist.username}>"
+
+
+# Columns added to Track after the first release; SQLite needs them ALTERed onto existing databases.
+TRACK_UPGRADE_COLUMNS = {
+    "album": "VARCHAR(300)",
+    "cover": "VARCHAR(500)",
+    "stream_url": "VARCHAR(500)",
+    "video_url": "VARCHAR(500)",
+    "duration_ms": "INTEGER",
+    "section": "VARCHAR(20)",
+}
+
+
+def upgrade_schema():
+    """Adds any missing Track columns in place (db.create_all() never alters existing tables)."""
+    existing = {col["name"] for col in db.inspect(db.engine).get_columns("track")}
+    missing = {name: ddl for name, ddl in TRACK_UPGRADE_COLUMNS.items() if name not in existing}
+    if not missing:
+        return
+    with db.engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.execute(db.text(f"ALTER TABLE track ADD COLUMN {name} {ddl}"))
 
 
 class ExternalTrack(db.Model):

@@ -467,6 +467,10 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 }
 .card-row .card { scroll-snap-align: start; }
 
+/* ----- Artists: round portrait cards ----- */
+.artist-row .card { text-align: center; }
+.artist-row .card .cover { border-radius: 50%; }
+
 /* ----- Top charts extras ----- */
 .chart-row .duration {
   font-size: var(--fs-small);
@@ -1063,6 +1067,21 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
   animation-play-state: paused;
 }
 .audio-playing .stage-bars i { animation-play-state: running; }
+/* Canvas: a track's looping 10 s clip replaces the cover art and CSS visualizer bars */
+.stage-cover { position: relative; overflow: hidden; }
+#canvas-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.stage.has-canvas .stage-cover { width: min(56vh, 460px, 80vw); }
+.stage.has-canvas.canvas-ready #canvas-video { opacity: 1; }
+.stage.has-canvas .stage-cover { animation: none; }
+.stage.has-canvas .stage-bars { display: none; }
 .stage-title { font-family: var(--font-heading); font-size: var(--fs-h1); font-weight: 700; }
 .stage-artist { color: var(--text-muted); }
 

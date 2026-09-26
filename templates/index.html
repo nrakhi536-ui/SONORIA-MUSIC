@@ -69,6 +69,16 @@
 
       <!-- ===== HOME VIEW ===== -->
       <section class="view" id="view-home" data-view="home">
+        <!-- Locally hosted catalogue: full-length MP3s with cover art and Canvas loops (/api/home_sections) -->
+        <h2 class="section-title">Trending Now</h2>
+        <div class="card-row" id="trending-now"></div>
+
+        <h2 class="section-title">Viral on Reels &amp; Shorts</h2>
+        <div class="card-row" id="viral-reels"></div>
+
+        <h2 class="section-title">Artists</h2>
+        <div class="card-row artist-row" id="artists"></div>
+
         <h2 class="section-title">Jump Back In</h2>
         <div class="quick-grid" id="jump-back-in"></div>
 
@@ -122,7 +132,9 @@
     <section class="stage" id="stage" hidden aria-label="Visualizer">
       <div class="stage-bg" id="stage-bg"></div>
       <div class="stage-inner">
-        <div class="stage-cover" id="stage-cover"></div>
+        <div class="stage-cover" id="stage-cover">
+          <video id="canvas-video" muted loop playsinline preload="none" aria-hidden="true"></video>
+        </div>
         <div class="stage-bars" id="stage-bars" aria-hidden="true"></div>
         <div class="stage-title" id="stage-title">Nothing playing</div>
         <div class="stage-artist" id="stage-artist">Pick a track to start</div>

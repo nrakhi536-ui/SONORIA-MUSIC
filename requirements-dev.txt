@@ -1,2 +1,6 @@
 -r requirements.txt
 playwright==1.63.0
+# generate_media.py (cover art + Canvas video rendering)
+moviepy==2.2.1
+numpy==2.5.3
+pillow==11.3.0

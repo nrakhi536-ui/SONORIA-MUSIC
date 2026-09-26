@@ -48,9 +48,23 @@ You can open a view directly with a link like `/spa#library` or `/spa#explore`.
 | `GET /api/search?q=<term>` | `{results: [track], error}`: up to 25 iTunes songs |
 | `GET /api/songs` | `{sections: {"Chill": [...], "Top Hits": [...], "Synthwave": [...]}}` for the home page |
 | `GET /api/lyrics?artist=<a>&title=<t>[&album=<al>&duration=<sec>]` | `{lines: [str], instrumental, error}`; 404 if no lyrics are found |
+| `GET /api/home_sections` | `{sections: [{key, title, tracks: [track]}]}` for the local catalogue: Trending Now, Viral on Reels & Shorts, Artists |
 
 Each `track` has this shape: `{id, title, artist, album, cover (600×600), stream_url (30s preview), duration (ms)}`.
+Local catalogue tracks also have `video_url` (10 s Canvas loop), `section` and `local: true`, their `id` looks like
+`"local-3"`, and `stream_url` is the full-length MP3.
 CORS is enabled for `/api/*` only.
+
+### Local catalogue (full songs, covers and Canvas loops)
+Put MP3s in `static/media/audio/`, then run:
+```bash
+pip install -r requirements-dev.txt
+python generate_media.py          # add --force to re-render existing covers and videos
+```
+For each MP3 this writes a 600×600 cover to `static/media/covers/` and a 10-second looping MP4 to
+`static/media/video/`. The video pulses to the song's own audio. It also adds or updates the track in the database.
+Titles, artists and home-page sections come from the `CATALOG` table at the top of `generate_media.py`. Edit it
+and re-run to change them. In the SPA, switch the player to **Video** to see a track's Canvas loop.
 
 ### Make yourself an admin
 Open `instance/app.db` in DB Browser for SQLite. In the Execute SQL tab, run:

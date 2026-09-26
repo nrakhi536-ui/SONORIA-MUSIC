@@ -20,7 +20,8 @@ const state = {
   liked: loadLiked(),   // Map<trackId, track>, in the order they were liked
   lyricsCache: new Map(),
   currentView: "home",
-  homeLoaded: false,
+  homeLoaded: false,    // iTunes-backed home rows
+  localLoaded: false,   // locally hosted rows from /api/home_sections
   seeking: false,       // true while the user drags the progress bar
   errorStreak: 0,       // consecutive load failures, to stop auto-skip cascades
 };
@@ -74,6 +75,7 @@ const queueBtn = $("queue-btn");
 const lyricsBtn = $("lyrics-btn");
 const sidePanel = $("side-panel");
 const stage = $("stage");
+const canvasVideo = $("canvas-video");
 const searchForm = $("search-form");
 const searchInput = $("search-input");
 const mainWorkspace = $("main-workspace");
@@ -187,6 +189,14 @@ function renderCard(track, list, index) {
   `;
   setCover(div.querySelector(".cover"), track.cover);
   bindPlay(div, list, index);
+  return div;
+}
+
+// Artists row: a round portrait card led by the artist's name, playing their track
+function renderArtistCard(track, list, index) {
+  const div = renderCard(track, list, index);
+  div.querySelector(".title").textContent = track.artist || "Unknown Artist";
+  div.querySelector(".subtitle").textContent = track.title || "Untitled";
   return div;
 }
 
@@ -556,8 +566,8 @@ audio.addEventListener("volumechange", () => {
 });
 
 // ===== Audio element event wiring =====
-audio.addEventListener("play", () => { state.isPlaying = true; updatePlayButton(); });
-audio.addEventListener("pause", () => { state.isPlaying = false; updatePlayButton(); });
+audio.addEventListener("play", () => { state.isPlaying = true; updatePlayButton(); syncCanvas(); });
+audio.addEventListener("pause", () => { state.isPlaying = false; updatePlayButton(); syncCanvas(); });
 audio.addEventListener("waiting", () => playBtn.classList.add("loading"));
 audio.addEventListener("playing", () => {
   playBtn.classList.remove("loading");
@@ -583,11 +593,13 @@ audio.addEventListener("error", () => {
   playBtn.classList.remove("loading");
   state.isPlaying = false;
   updatePlayButton();
+  syncCanvas();
 
   state.errorStreak += 1;
   const canSkip = state.errorStreak < MAX_AUTO_SKIPS && state.pos < state.order.length - 1;
   showToast(
-    `Couldn't load the preview for “${track.title}”.` + (canSkip ? " Skipping ahead…" : ""),
+    (track.local ? `Couldn't load “${track.title}”.` : `Couldn't load the preview for “${track.title}”.`) +
+      (canSkip ? " Skipping ahead…" : ""),
     { tone: "error" },
   );
   if (canSkip) setTimeout(() => playNext({ auto: true }), 900);
@@ -664,7 +676,41 @@ function updateStage() {
   setCover($("stage-bg"), t.cover);
   $("stage-title").textContent = t.title || "Untitled";
   $("stage-artist").textContent = t.artist || "";
+  updateCanvas(t);
 }
+
+// ===== Canvas: the track's looping 10 s MP4, shown in the stage while the song plays =====
+function updateCanvas(track) {
+  const url = track.video_url || "";
+  if (canvasVideo.getAttribute("src") === url && url) return syncCanvas();
+
+  stage.classList.remove("canvas-ready");
+  stage.classList.toggle("has-canvas", !!url);
+  if (url) {
+    canvasVideo.src = url;
+  } else {
+    canvasVideo.pause();
+    canvasVideo.removeAttribute("src");
+    canvasVideo.load(); // drop the previous clip's buffered frames
+  }
+  syncCanvas();
+}
+
+// The clip is decorative: it only runs while the song plays and the stage is on screen.
+function syncCanvas() {
+  const shouldPlay = state.isPlaying && state.mode === "video" && stage.classList.contains("has-canvas");
+  if (shouldPlay && canvasVideo.paused) {
+    canvasVideo.play().catch(() => { /* superseded by a newer src, or autoplay blocked */ });
+  } else if (!shouldPlay && !canvasVideo.paused) {
+    canvasVideo.pause();
+  }
+}
+
+canvasVideo.addEventListener("playing", () => stage.classList.add("canvas-ready"));
+canvasVideo.addEventListener("error", () => {
+  // Missing or broken clip: fall back to the cover art and CSS visualizer bars
+  if (canvasVideo.getAttribute("src")) stage.classList.remove("has-canvas", "canvas-ready");
+});
 
 function setMode(mode) {
   state.mode = mode;
@@ -672,6 +718,7 @@ function setMode(mode) {
   document.querySelectorAll(".mode-switch button").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
   });
+  syncCanvas();
 }
 
 document.querySelectorAll(".mode-switch button").forEach((b) => {
@@ -772,7 +819,7 @@ async function loadLyrics() {
     body.innerHTML = data.lines
       .map((line) => (line.trim() ? `<p>${escapeHtml(line)}</p>` : '<p class="gap"></p>'))
       .join("") +
-      '<p class="lyrics-note">Lyrics are for the full song; the preview plays a 30-second excerpt.</p>';
+      (t.local ? "" : '<p class="lyrics-note">Lyrics are for the full song; the preview plays a 30-second excerpt.</p>');
     body.scrollTop = 0;
   };
 
@@ -941,8 +988,45 @@ $("liked-play").addEventListener("click", () => {
   if (tracks.length) playTrack(tracks, 0);
 });
 
-// ===== Home population (Phase 1's /api/songs fallback route) =====
-async function loadHome() {
+// ===== Home population =====
+function loadHome() {
+  loadLocalSections();
+  loadItunesSections();
+}
+
+// Locally hosted catalogue: section key from /api/home_sections -> [container id, card renderer]
+const LOCAL_SECTION_ROWS = {
+  trending: ["trending-now", renderCard],
+  viral: ["viral-reels", renderCard],
+  artist: ["artists", renderArtistCard],
+};
+
+async function loadLocalSections() {
+  if (state.localLoaded) return;
+  const rows = Object.values(LOCAL_SECTION_ROWS).map(([id]) => $(id));
+  rows.forEach((row) => showMessage(row, "Loading..."));
+
+  try {
+    const resp = await fetch("/api/home_sections");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const { sections } = await resp.json();
+    sections.forEach(({ key, tracks }) => {
+      const [id, render] = LOCAL_SECTION_ROWS[key] || [];
+      if (!id) return;
+      const row = $(id);
+      row.innerHTML = "";
+      if (!tracks.length) return showMessage(row, "No tracks here yet.");
+      tracks.forEach((t, i) => row.appendChild(render(t, tracks, i)));
+    });
+    state.localLoaded = true;
+    highlightPlaying();
+  } catch {
+    rows.forEach((row) => showMessage(row, "Could not load the Sonoria catalogue right now."));
+  }
+}
+
+// iTunes-backed rows (Phase 1's /api/songs fallback route)
+async function loadItunesSections() {
   if (state.homeLoaded) return;
 
   const jumpBackIn = $("jump-back-in");
