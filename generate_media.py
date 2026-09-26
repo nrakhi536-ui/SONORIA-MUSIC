@@ -20,23 +20,16 @@ import numpy as np
 from moviepy import AudioFileClip, VideoClip
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-ROOT = Path(__file__).resolve().parent
-MEDIA = ROOT / "static" / "media"
-AUDIO_DIR, COVER_DIR, VIDEO_DIR = MEDIA / "audio", MEDIA / "covers", MEDIA / "video"
-
-# Violet Dusk palette
-PLUM, MAUVE, PEACH = (0x50, 0x2D, 0x55), (0x93, 0x50, 0x73), (0xF6, 0xDB, 0xC0)
-CREAM, DEEP = (0xF8, 0xF4, 0xE9), (0x1F, 0x10, 0x22)
-
-COVER_SIZE = 600
-VIDEO_SECONDS, VIDEO_FPS = 10, 24
-LOOP_FADE_SECONDS = 1.0   # envelope crossfade that makes the last frame flow into the first
-SAMPLE_RATE = 22050
-RING_BARS = 72
-UNKNOWN_ARTIST = "Unknown Artist"
-
-# Curated metadata: the MP3 tags are missing or carry download-site spam ("- PagalNew").
-# artist=None means unknown - fill it in here and re-run to update the database.
+# =====================================================================
+# EDIT HERE: one entry per MP3 file in static/media/audio/
+#   title   - name printed on the cover and shown in the app
+#   artist  - artist name; None shows "Unknown Artist" (and no artist line on the cover)
+#   album   - optional
+#   section - "trending" (Trending Now), "viral" (Viral on Reels & Shorts) or "artist" (Artists)
+#   genre   - optional: Romantic, HipHop, EDM, Devotional, Retro, Rock or Other
+# After editing, run:  python generate_media.py --force
+# The MP3 tags are missing or carry download-site spam ("- PagalNew"), so this table is the source of truth.
+# =====================================================================
 CATALOG = {
     "Billo Rani.mp3":              dict(title="Billo Rani", artist="Anand Raj Anand", album="Goal", section="trending", genre="Retro"),
     "Challa Jab Tak Hai Jaan.mp3": dict(title="Challa", artist="Rabbi Shergill", album="Jab Tak Hai Jaan", section="trending", genre="Rock"),
@@ -55,6 +48,21 @@ CATALOG = {
     "Kabhi Kabhi aditi.mp3":       dict(title="Kabhi Kabhi Aditi", artist="Rashid Ali", album="Jaane Tu... Ya Jaane Na", section="artist", genre="Romantic"),
 }
 
+
+ROOT = Path(__file__).resolve().parent
+MEDIA = ROOT / "static" / "media"
+AUDIO_DIR, COVER_DIR, VIDEO_DIR = MEDIA / "audio", MEDIA / "covers", MEDIA / "video"
+
+# Violet Dusk palette
+PLUM, MAUVE, PEACH = (0x50, 0x2D, 0x55), (0x93, 0x50, 0x73), (0xF6, 0xDB, 0xC0)
+CREAM, DEEP = (0xF8, 0xF4, 0xE9), (0x1F, 0x10, 0x22)
+
+COVER_SIZE = 600
+VIDEO_SECONDS, VIDEO_FPS = 10, 24
+LOOP_FADE_SECONDS = 1.0   # envelope crossfade that makes the last frame flow into the first
+SAMPLE_RATE = 22050
+RING_BARS = 72
+UNKNOWN_ARTIST = "Unknown Artist"
 
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
