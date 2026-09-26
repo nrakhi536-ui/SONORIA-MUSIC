@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+
+  <div class="row-title" style="font-size:32px;">Liked Songs</div>
+  <p style="color:#b8a3c2;">{{ liked_tracks|length }} track{{ 's' if liked_tracks|length != 1 else '' }}</p>
+
+  {% if liked_tracks %}
+    <div class="scroll-row" style="flex-wrap: wrap;">
+      {% for track in liked_tracks %}
+        <div class="card">
+          <div class="art">🎵</div>
+          <div class="title">{{ track.title }}</div>
+          <div class="subtitle">{{ track.artist.username }}</div>
+          {% if track.audio_file %}<audio controls src="{{ track.audio_file }}"></audio>{% endif %}
+          <a class="like-btn" href="/unlike/{{ track.id }}">♥ Remove</a>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-msg">You haven't liked any songs yet. Tap ♡ on any track to add it here.</p>
+  {% endif %}
+
+{% endblock %}

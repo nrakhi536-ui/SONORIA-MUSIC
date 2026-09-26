@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">Admin Dashboard</div>
+<p><a href="/admin/approve" style="color:#e88fc0;">Review pending uploads ({{ pending_count }})</a></p>
+<p>Total users: {{ total_users }} | Total tracks: {{ total_tracks }} | Pending: {{ pending_count }}</p>
+{% endblock %}

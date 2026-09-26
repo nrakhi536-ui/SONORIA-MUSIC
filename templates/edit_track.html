@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">Edit Track</div>
+{% if error %}<p style="color:#ff8a8a">{{ error }}</p>{% endif %}
+<form method="POST">
+  <input name="title" value="{{ track.title }}" required style="padding:8px;">
+  <button type="submit">Save</button>
+</form>
+{% endblock %}

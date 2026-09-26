@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+
+  {% if recently_played %}
+    <div class="row-title">Jump Back In</div>
+    <div class="scroll-row">
+      {% for track in recently_played %}
+        <div class="card">
+          <div class="canvas-visual" data-audio-id="rp-{{ track.id }}"></div>
+          <div class="art">🎵</div>
+          <div class="title">{{ track.title }}</div>
+          <div class="subtitle">{{ track.artist.username }}</div>
+          {% if track.audio_file %}<audio id="rp-{{ track.id }}" controls src="{{ track.audio_file }}"></audio>{% endif %}
+          {% if current_user.is_authenticated %}
+            {% if track.id in liked_ids %}
+              <a class="like-btn" href="/unlike/{{ track.id }}">♥</a>
+            {% else %}
+              <a class="like-btn" href="/like/{{ track.id }}">♡</a>
+            {% endif %}
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="row-title">Trending Now</div>
+  <div class="scroll-row">
+    {% for track in trending %}
+      <div class="card">
+        <div class="canvas-visual" data-audio-id="tr-{{ track.id }}"></div>
+        <div class="art">🎵</div>
+        <div class="title">{{ track.title }}</div>
+        <div class="subtitle">{{ track.artist.username }}</div>
+        {% if track.audio_file %}<audio id="tr-{{ track.id }}" controls src="{{ track.audio_file }}"></audio>{% endif %}
+        <a href="/play/{{ track.id }}" style="font-size:12px;color:#e88fc0;">▶ Play</a>
+        {% if current_user.is_authenticated %}
+          {% if track.id in liked_ids %}
+            <a class="like-btn" href="/unlike/{{ track.id }}">♥</a>
+          {% else %}
+            <a class="like-btn" href="/like/{{ track.id }}">♡</a>
+          {% endif %}
+        {% endif %}
+      </div>
+    {% else %}
+      <span class="empty-msg">No tracks yet — check back soon!</span>
+    {% endfor %}
+  </div>
+
+  <div class="row-title">Viral on Reels &amp; Shorts</div>
+  <div class="scroll-row">
+    {% for track in viral_shorts %}
+      <div class="card">
+        <div class="canvas-visual" data-audio-id="vs-{{ track.id }}"></div>
+        <div class="art">🎵</div>
+        <div class="title">{{ track.title }}</div>
+        <div class="subtitle">{{ track.artist.username }}</div>
+        {% if track.audio_file %}<audio id="vs-{{ track.id }}" controls src="{{ track.audio_file }}"></audio>{% endif %}
+      </div>
+    {% else %}
+      <span class="empty-msg">Nothing here yet</span>
+    {% endfor %}
+  </div>
+
+  <div class="row-title">Artists</div>
+  <div class="scroll-row">
+    {% for singer in singers %}
+      <a class="card" href="/artist/{{ singer.id }}" style="text-align:center;">
+        <div class="art" style="border-radius:50%;">🎤</div>
+        <div class="title">{{ singer.username }}</div>
+      </a>
+    {% else %}
+      <span class="empty-msg">No artists yet</span>
+    {% endfor %}
+  </div>
+
+{% endblock %}

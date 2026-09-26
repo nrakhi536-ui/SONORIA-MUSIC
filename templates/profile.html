@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">My Profile</div>
+{% if tag %}<h2>Your Vibe: "{{ tag }}"</h2><p>Top genre: {{ genre }}</p>
+<p><a href="/tag/{{ current_user.username }}" style="color:#e88fc0;">Shareable tag page</a></p>
+{% else %}<p class="empty-msg">Play a few tracks to unlock your tag!</p>{% endif %}
+<h2>Streak: {{ streak }} day{{ 's' if streak != 1 else '' }} 🔥</h2>
+{% endblock %}

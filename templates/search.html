@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">Search Music</div>
+<form method="GET" style="margin-bottom:20px;">
+  <input name="q" value="{{ query }}" placeholder="Search..." style="padding:8px;border-radius:8px;border:none;">
+  <button type="submit">Search</button>
+</form>
+{% if error %}<p style="color:#ff8a8a">{{ error }}</p>
+{% elif query and not results %}<p class="empty-msg">No results found for "{{ query }}".</p>{% endif %}
+<div class="scroll-row" style="flex-wrap:wrap;">
+{% for r in results %}
+  <div class="card">
+    <div class="art">🎵</div>
+    <div class="title">{{ r.trackName }}</div>
+    <div class="subtitle">{{ r.artistName }}</div>
+    {% if r.previewUrl %}<audio controls src="{{ r.previewUrl }}"></audio>{% else %}(preview unavailable){% endif %}
+  </div>
+{% endfor %}
+</div>
+{% endblock %}

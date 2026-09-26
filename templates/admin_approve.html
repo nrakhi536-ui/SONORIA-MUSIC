@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">Pending Approvals</div>
+{% for track in tracks %}
+  <p>{{ track.title }} by {{ track.artist.username }}
+  <a href="/admin/approve/{{ track.id }}" style="color:#4ade80;">Approve</a> |
+  <a href="/admin/reject/{{ track.id }}" style="color:#ff8a8a;">Reject</a></p>
+{% else %}<p class="empty-msg">Nothing pending — all caught up!</p>{% endfor %}
+{% endblock %}

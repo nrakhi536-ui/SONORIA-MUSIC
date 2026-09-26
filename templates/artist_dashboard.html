@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">My Tracks</div>
+<p><a href="/artist/upload" style="color:#e88fc0;">+ Upload a new track</a></p>
+{% for track in tracks %}
+  <p>{{ track.title }} — {% if track.approved %}<span style="color:#4ade80;">Approved</span>{% else %}<span style="color:#f0c896;">Pending</span>{% endif %}
+  | Plays: {{ track.play_count }} | <a href="/artist/edit/{{ track.id }}" style="color:#e88fc0;">Edit</a> | <a href="/artist/delete/{{ track.id }}" style="color:#ff8a8a;">Delete</a></p>
+{% else %}<p class="empty-msg">You haven't uploaded anything yet.</p>{% endfor %}
+{% endblock %}

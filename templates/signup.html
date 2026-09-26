@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Sign Up - Sonoria</title>
+<style>
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(160deg, #2b1730 0%, #1c0f24 100%);
+  }
+  .card {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 20px; padding: 40px; width: 380px; text-align: center;
+  }
+  .logo { font-size: 26px; font-weight: bold; color: #f3e9f7; margin-bottom: 4px; }
+  .logo .accent { color: #e88fc0; }
+  .subtitle { color: #d8c5df; font-size: 18px; margin-bottom: 24px; }
+  label { display:block; text-align:left; color:#d8c5df; font-size:13px; margin-bottom:4px; }
+  input[type=text], input[type=password], select {
+    width: 100%; padding: 10px; margin-bottom: 14px; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.2); color: #fff; outline: none;
+  }
+  .signin-btn {
+    width: 100%; padding: 12px; border-radius: 10px; border: none;
+    background: #f0c896; color: #2b1730; font-weight: bold; font-size: 15px; cursor: pointer;
+  }
+  .error { color: #ff8a8a; font-size: 13px; margin-bottom: 10px; }
+  .footer-link { color: #d8c5df; font-size: 13px; margin-top: 16px; }
+  .footer-link a { color: #f0c896; font-weight: bold; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">Sonoria <span class="accent">•</span></div>
+    <div class="subtitle">Create Your Sound</div>
+
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+    <form method="POST">
+      <label>Username</label>
+      <input type="text" name="username" required>
+      <label>Password</label>
+      <input type="password" name="password" required>
+      <label>I am a...</label>
+      <select name="role">
+        <option value="customer">Customer</option>
+        <option value="artist">Artist</option>
+      </select>
+      <button class="signin-btn" type="submit">SIGN UP</button>
+    </form>
+
+    <div class="footer-link">Already have an account? <a href="/login">Sign In</a></div>
+  </div>
+</body>
+</html>

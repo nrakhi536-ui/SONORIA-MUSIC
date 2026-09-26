@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">{{ artist.username }}</div>
+<div class="scroll-row" style="flex-wrap:wrap;">
+{% for track in tracks %}
+  <div class="card"><div class="art">🎵</div><div class="title">{{ track.title }}</div>
+  {% if track.audio_file %}<audio controls src="{{ track.audio_file }}"></audio>{% endif %}</div>
+{% else %}<span class="empty-msg">No approved tracks yet.</span>{% endfor %}
+</div>
+{% endblock %}

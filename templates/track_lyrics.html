@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-title">{{ track.title }}</div>
+<audio id="player" controls src="{{ track.audio_file }}"></audio>
+{% if error %}<p style="color:#ff8a8a">{{ error }}</p>
+{% elif not lines %}<p class="empty-msg">No synced lyrics available for this track.</p>
+{% else %}
+<div id="lyrics-box" style="max-height:300px;overflow-y:auto;margin-top:20px;">
+{% for line in lines %}<p data-time="{{ line.time }}" style="color:#9c86a8;">{{ line.text }}</p>{% endfor %}
+</div>
+<script>
+const audio = document.getElementById("player");
+const lyricLines = document.querySelectorAll("#lyrics-box p");
+audio.addEventListener("timeupdate", () => {
+  let current = audio.currentTime; let activeLine = null;
+  lyricLines.forEach(line => {
+    if (current >= parseFloat(line.dataset.time)) { line.style.color = "#9c86a8"; activeLine = line; }
+    else { line.style.color = "#5c4c66"; }
+  });
+  if (activeLine) { activeLine.style.color = "#f3e9f7"; activeLine.style.fontWeight = "bold"; }
+});
+</script>
+{% endif %}
+{% endblock %}
