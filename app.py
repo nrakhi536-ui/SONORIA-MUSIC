@@ -202,14 +202,16 @@ def logout():
 
 # ---------- CUSTOMER: HOME ----------
 
+@app.route("/")
 @app.route("/spa")
-def spa():
-    """New JS-driven single-page app experience (Violet Dusk redesign)."""
+def home():
+    """The JS-driven single-page app (Violet Dusk redesign); /spa is kept as an alias for old links."""
     return render_template("index.html")
 
 
-@app.route("/")
-def home():
+@app.route("/classic")
+def classic_home():
+    """The original server-rendered home page."""
     recently_played = []
     if current_user.is_authenticated:
         history = (PlayHistory.query

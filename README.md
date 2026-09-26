@@ -4,7 +4,7 @@ A Flask music streaming app with a single-page web player styled with the "Viole
 It streams 30-second song previews from the iTunes Search API and shows lyrics from LRCLIB.
 
 ## Features
-- **Web player (`/spa`)**: Home, Explore, Library and Search views; mood filters; a persistent player
+- **Web player (`/`)**: Home, Explore, Library and Search views; mood filters; a persistent player
   with seek, volume, shuffle, repeat, a queue panel, a lyrics panel and a video/visualizer mode.
 - **JSON API**: iTunes search, home-page sections and lyrics lookup (see below).
 - **Accounts and roles**: signup, login and logout for customers, artists and admins.
@@ -35,12 +35,12 @@ The first run creates the SQLite database at `instance/app.db`. Then open:
 
 | URL | What it is |
 | --- | --- |
-| http://127.0.0.1:5000/spa | The single-page web player |
+| http://127.0.0.1:5000/ | The single-page web player (also at `/spa`) |
 | http://127.0.0.1:5000/signup | Create an account |
 | http://127.0.0.1:5000/login | Log in |
-| http://127.0.0.1:5000/ | The older server-rendered home page |
+| http://127.0.0.1:5000/classic | The older server-rendered home page |
 
-You can open a view directly with a link like `/spa#library` or `/spa#explore`.
+You can open a view directly with a link like `/#library` or `/#explore`.
 
 ### JSON API
 | Endpoint | Returns |

@@ -12,9 +12,9 @@ import argparse
 import hashlib
 import math
 import re
+import os
 import secrets
 from pathlib import Path
-from urllib.parse import quote
 
 import numpy as np
 from moviepy import AudioFileClip, VideoClip
@@ -33,14 +33,14 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 CATALOG = {
     "Billo Rani.mp3":              dict(title="Billo Rani", artist="Anand Raj Anand", album="Goal", section="trending", genre="Retro"),
     "Challa Jab Tak Hai Jaan.mp3": dict(title="Challa", artist="Rabbi Shergill", album="Jab Tak Hai Jaan", section="trending", genre="Rock"),
-    "Babli tero mobile.mp3":       dict(title="Babli Tero Mobile", artist=None, section="trending"),
-    "Baby Doll.mp3":               dict(title="Baby Doll", artist=None, section="trending"),
-    "Udi Udi.mp3":                 dict(title="Udi Udi", artist=None, section="trending"),
+    "Babli tero mobile.mp3":       dict(title="Babli Tero Mobile", artist="Gajendra rana and Meena rana" , section="trending"),
+    "Baby Doll.mp3":               dict(title="Baby Doll", artist="Dominic Fike", section="trending"),
+    "Udi Udi.mp3":                 dict(title="Udi Udi", artist="Aneesh Pojari", section="trending"),
     "End_of_Beginning.mp3":        dict(title="End of Beginning", artist="Djo", album="Decide", section="viral"),
-    "Earrings.mp3":                dict(title="Earrings", artist=None, section="viral"),
-    "Honeypie.mp3":                dict(title="Honeypie", artist=None, section="viral"),
-    "White keys.mp3":              dict(title="White Keys", artist=None, section="viral"),
-    "I love you baby.mp3":         dict(title="I Love You Baby", artist=None, section="viral", genre="Romantic"),
+    "Earrings.mp3":                dict(title="Earrings", artist="Malcomm Tod", section="viral"),
+    "Honeypie.mp3":                dict(title="Honeypie", artist="Jawny", section="viral"),
+    "White keys.mp3":              dict(title="White Keys", artist="Dominic Fike", section="viral"),
+    "I love you baby.mp3":         dict(title="I Love You Baby", artist="Emilee Flood", section="viral", genre="Romantic"),
     "Perfect.mp3":                 dict(title="Perfect", artist="Ed Sheeran", album="÷", section="artist", genre="Romantic"),
     "Baby.mp3":                    dict(title="Baby", artist="Justin Bieber", album="My World 2.0", section="artist"),
     "Nayan Ne Bandh Rakhine.mp3":  dict(title="Nayan Ne Bandh Rakhine", artist="Darshan Raval", section="artist", genre="Romantic"),
@@ -291,8 +291,47 @@ def make_video(info, mp3, cover_path, out_path):
 
 # ---------- Database ----------
 
+def site_path(file):
+    """The file's exact on-disk path as a site-relative string, e.g. /static/media/audio/Baby Doll.mp3.
+
+    Stored in the database unencoded so it matches the filename character for character;
+    Track.to_dict() percent-encodes it into a URL for the API.
+    """
+    return "/" + file.relative_to(ROOT).as_posix()
+
+
+def exact_case_exists(stored_path):
+    """True when stored_path names an existing file with exactly this spelling and case.
+
+    Windows ignores case, so Path.exists() alone would pass /static/Media/... or baby doll.MP3,
+    which then 404 on a case-sensitive host.
+    """
+    current = ROOT
+    for part in stored_path.lstrip("/").split("/"):
+        if not current.is_dir() or part not in os.listdir(current):
+            return False
+        current = current / part
+    return current.is_file()
+
+
+def verify_database_paths():
+    """Checks every catalogue row's audio, cover and video path against the files on disk."""
+    from app import app
+    from models import Track
+
+    with app.app_context():
+        tracks = Track.query.filter(Track.section.isnot(None)).order_by(Track.id).all()
+        problems = [f"  {t.title}: {field} {path!r}"
+                    for t in tracks
+                    for field, path in (("audio", t.stream_url), ("cover", t.cover), ("video", t.video_url))
+                    if not path or not exact_case_exists(path)]
+    if problems:
+        raise SystemExit("Database paths that don't match a file on disk exactly:\n" + "\n".join(problems))
+    print(f"Verified: all {len(tracks) * 3} audio/cover/video paths in the database match files on disk exactly.")
+
+
 def seed_database(entries):
-    """Upserts one approved Track per MP3 (keyed by stream_url), each owned by an artist User."""
+    """Upserts one approved Track per MP3 (keyed by its audio filename), each owned by an artist User."""
     from app import app
     from models import db, User, Track, upgrade_schema
 
@@ -309,11 +348,11 @@ def seed_database(entries):
                 db.session.add(artist)
                 db.session.flush()
 
-            track = Track.query.filter_by(stream_url=info["stream_url"]).first()
+            track = Track.query.filter(Track.section.isnot(None), Track.audio_file == info["file"]).first()
             if track:
                 updated += 1
             else:
-                track = Track(stream_url=info["stream_url"], play_count=0)
+                track = Track(play_count=0)
                 db.session.add(track)
                 created += 1
             track.title = info["title"]
@@ -321,6 +360,7 @@ def seed_database(entries):
             track.album = info["album"]
             track.genre = info["genre"]
             track.section = info["section"]
+            track.stream_url = info["stream_url"]
             track.cover = info["cover"]
             track.video_url = info["video_url"]
             track.audio_file = info["file"]
@@ -364,12 +404,13 @@ def main():
             **info,
             "file": mp3.name,
             "duration_ms": int(duration * 1000),
-            "stream_url": "/static/media/audio/" + quote(mp3.name),
-            "cover": f"/static/media/covers/{cover_path.name}",
-            "video_url": f"/static/media/video/{video_path.name}",
+            "stream_url": site_path(mp3),
+            "cover": site_path(cover_path),
+            "video_url": site_path(video_path),
         })
 
     seed_database(entries)
+    verify_database_paths()
 
 
 if __name__ == "__main__":

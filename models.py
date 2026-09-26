@@ -1,8 +1,14 @@
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
+from urllib.parse import quote
 
 db = SQLAlchemy()
+
+
+def media_url(path):
+    """Percent-encodes a stored site path ("/static/media/audio/Baby Doll.mp3") into a URL; None stays None."""
+    return quote(path) if path else path
 
 
 class User(UserMixin, db.Model):
@@ -44,15 +50,16 @@ class Track(db.Model):
         """Same shape as the normalized /api/search results, plus the local-only media fields.
 
         The id is prefixed so local tracks never collide with iTunes ids in the frontend's liked/queue state.
+        Media paths are stored exactly as the files are named on disk and percent-encoded here into URLs.
         """
         return {
             "id": f"local-{self.id}",
             "title": self.title,
             "artist": self.artist.username,
             "album": self.album,
-            "cover": self.cover,
-            "stream_url": self.stream_url,
-            "video_url": self.video_url,
+            "cover": media_url(self.cover),
+            "stream_url": media_url(self.stream_url),
+            "video_url": media_url(self.video_url),
             "duration": self.duration_ms,
             "genre": self.genre,
             "section": self.section,
