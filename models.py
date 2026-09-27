@@ -70,26 +70,73 @@ class Track(db.Model):
         return f"<Track {self.title} by {self.artist.username}>"
 
 
+# Many-to-many: which catalogue tracks are in which playlist, in the order they were added.
+playlist_tracks = db.Table(
+    "playlist_tracks",
+    db.Column("playlist_id", db.Integer, db.ForeignKey("playlist.id", ondelete="CASCADE"), primary_key=True),
+    db.Column("track_id", db.Integer, db.ForeignKey("track.id", ondelete="CASCADE"), primary_key=True),
+    db.Column("added_at", db.DateTime, server_default=db.func.now()),
+)
+
+
+class Playlist(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+    user = db.relationship("User", backref="playlists")
+    tracks = db.relationship("Track", secondary=playlist_tracks, order_by=playlist_tracks.c.added_at,
+                             backref="playlists")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "track_count": len(self.tracks),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class UserPlayCount(db.Model):
+    """How many times a user has played each genre - the input to their genre badge.
+
+    genre is a canonical badge genre from badges.py ("Romantic", "HipHop", ...) or "Other".
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    genre = db.Column(db.String(50), nullable=False)
+    play_count = db.Column(db.Integer, nullable=False, default=0)
+    last_played_at = db.Column(db.DateTime, server_default=db.func.now())  # breaks ties toward the recent genre
+
+    __table_args__ = (db.UniqueConstraint("user_id", "genre", name="unique_user_genre"),)
+
+
 # Columns added to Track after the first release; SQLite needs them ALTERed onto existing databases.
-TRACK_UPGRADE_COLUMNS = {
-    "album": "VARCHAR(300)",
-    "cover": "VARCHAR(500)",
-    "stream_url": "VARCHAR(500)",
-    "video_url": "VARCHAR(500)",
-    "duration_ms": "INTEGER",
-    "section": "VARCHAR(20)",
-}
-
-
 def upgrade_schema():
-    """Adds any missing Track columns in place (db.create_all() never alters existing tables)."""
-    existing = {col["name"] for col in db.inspect(db.engine).get_columns("track")}
-    missing = {name: ddl for name, ddl in TRACK_UPGRADE_COLUMNS.items() if name not in existing}
-    if not missing:
-        return
-    with db.engine.begin() as conn:
-        for name, ddl in missing.items():
-            conn.execute(db.text(f"ALTER TABLE track ADD COLUMN {name} {ddl}"))
+    """Adds columns that models gained after their table was created (db.create_all() never alters tables).
+
+    Only nullable columns can be added this way; that covers every column added so far
+    (Track's media fields, and external_id on Like / PlayHistory).
+    """
+    inspector = db.inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+    statements = []
+    for table in db.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all() just made it with every column
+        have = {col["name"] for col in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in have:
+                continue
+            if not column.nullable:
+                raise RuntimeError(f"Can't add NOT NULL column {table.name}.{column.name} to an existing table")
+            ddl = column.type.compile(dialect=db.engine.dialect)
+            statements.append(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl}')
+    if statements:
+        with db.engine.begin() as conn:
+            for statement in statements:
+                conn.execute(db.text(statement))
 
 
 class ExternalTrack(db.Model):

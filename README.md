@@ -49,6 +49,17 @@ You can open a view directly with a link like `/#library` or `/#explore`.
 | `GET /api/songs` | `{sections: {"Chill": [...], "Top Hits": [...], "Synthwave": [...]}}` for the home page |
 | `GET /api/lyrics?artist=<a>&title=<t>[&album=<al>&duration=<sec>]` | `{lines: [str], instrumental, error}`; 404 if no lyrics are found |
 | `GET /api/home_sections` | `{sections: [{key, title, tracks: [track]}]}` for the local catalogue: Trending Now, Viral on Reels & Shorts, Artists |
+| `GET /api/playlists[?track_id=local-3]` | `{playlists: [{id, name, track_count, created_at, contains_track?}]}` for the signed-in user |
+| `POST /api/playlists` | Body `{name, track_id?}`: creates a playlist, optionally adding a track straight away |
+| `GET /api/playlists/<id>` | `{id, name, track_count, created_at, tracks: [track]}` |
+| `POST /api/playlists/<id>/tracks` | Body `{track_id}`: 201 when added, 200 with `added: false` if it was already there |
+| `POST /api/track/play` | Body `{track_id, genre?}`: records a play and returns `{recorded, badge}` |
+| `GET /api/user/badge` | `{badge: {badge, genre, plays, total_plays}}`, or `{badge: null}` before the first play |
+
+Playlist and badge endpoints need a signed-in user and return 401 JSON otherwise. `POST /api/track/play` also
+works for guests: it bumps catalogue play counts and returns `{recorded: false}`. Only Sonoria catalogue
+tracks (`local-*` ids) can go in playlists. Listener badges come from the user's most played genre, as mapped in
+[badges.py](badges.py).
 
 Each `track` has this shape: `{id, title, artist, album, cover (600×600), stream_url (30s preview), duration (ms)}`.
 Local catalogue tracks also have `video_url` (10 s Canvas loop), `section` and `local: true`, their `id` looks like

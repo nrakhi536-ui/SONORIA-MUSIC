@@ -1,7 +1,9 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
-from models import db, User, Track, PlayHistory, Like, upgrade_schema
+from models import db, User, Track, PlayHistory, Like, Playlist, playlist_tracks, upgrade_schema
+from badges import get_user_genre_badge, record_genre_play
+from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 import requests
 import feedparser
@@ -42,6 +44,7 @@ def normalize_itunes_track(item):
         "cover": cover.replace("/100x100bb.jpg", "/600x600bb.jpg"),
         "stream_url": item.get("previewUrl"),
         "duration": item.get("trackTimeMillis"),
+        "genre": item.get("primaryGenreName"),
     }
 
 
@@ -106,6 +109,159 @@ def api_home_sections():
     return jsonify({
         "sections": [{"key": key, "title": title, "tracks": grouped[key]} for key, title in LOCAL_SECTIONS.items()],
     })
+
+
+# ---------- PLAYLISTS + GENRE BADGE API ----------
+
+def api_login_required(view):
+    """Like login_required, but answers API calls with 401 JSON instead of redirecting to /login."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not current_user.is_authenticated:
+            return jsonify({"error": "Log in to use playlists and badges."}), 401
+        return view(*args, **kwargs)
+    return wrapper
+
+
+PLAYLIST_NAME_MAX = 100
+CATALOGUE_ONLY = "Only Sonoria catalogue tracks can be added to playlists."
+
+
+def parse_local_track_id(value):
+    """Accepts a catalogue track id as the SPA sends it ("local-3") or as a plain int; None if invalid."""
+    if isinstance(value, str) and value.startswith("local-"):
+        value = value[len("local-"):]
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def playable_track(value):
+    """The approved, streamable catalogue Track for an id from the client, or None."""
+    track_id = parse_local_track_id(value)
+    track = db.session.get(Track, track_id) if track_id is not None else None
+    return track if track and track.approved and track.stream_url else None
+
+
+def own_playlist(playlist_id):
+    """The current user's playlist, or None (someone else's playlist is treated as missing)."""
+    playlist = db.session.get(Playlist, playlist_id)
+    return playlist if playlist and playlist.user_id == current_user.id else None
+
+
+def add_to_playlist(playlist, track):
+    """Adds track unless it is already there; returns True when it was added."""
+    if track in playlist.tracks:
+        return False
+    db.session.execute(playlist_tracks.insert().values(playlist_id=playlist.id, track_id=track.id))
+    db.session.expire(playlist, ["tracks"])
+    return True
+
+
+@app.route("/api/playlists")
+@api_login_required
+def api_list_playlists():
+    """The user's playlists, newest first. ?track_id=local-3 also flags which ones already hold that track."""
+    playlists = (Playlist.query.filter_by(user_id=current_user.id)
+                 .order_by(Playlist.created_at.desc(), Playlist.id.desc()).all())
+    check_id = parse_local_track_id(request.args.get("track_id"))
+    result = []
+    for playlist in playlists:
+        item = playlist.to_dict()
+        if check_id is not None:
+            item["contains_track"] = any(t.id == check_id for t in playlist.tracks)
+        result.append(item)
+    return jsonify({"playlists": result})
+
+
+@app.route("/api/playlists", methods=["POST"])
+@api_login_required
+def api_create_playlist():
+    """Creates {"name": ...}; an optional "track_id" is added straight away (create-and-add from the modal)."""
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Give the playlist a name."}), 400
+    if len(name) > PLAYLIST_NAME_MAX:
+        return jsonify({"error": f"Playlist names can be at most {PLAYLIST_NAME_MAX} characters."}), 400
+
+    track = None
+    if data.get("track_id") is not None:
+        track = playable_track(data["track_id"])
+        if not track:
+            return jsonify({"error": CATALOGUE_ONLY}), 400
+
+    playlist = Playlist(name=name, user_id=current_user.id)
+    db.session.add(playlist)
+    db.session.flush()
+    if track:
+        add_to_playlist(playlist, track)
+    db.session.commit()
+    return jsonify({"playlist": playlist.to_dict(), "added": bool(track)}), 201
+
+
+@app.route("/api/playlists/<int:playlist_id>")
+@api_login_required
+def api_get_playlist(playlist_id):
+    playlist = own_playlist(playlist_id)
+    if not playlist:
+        return jsonify({"error": "Playlist not found."}), 404
+    return jsonify({**playlist.to_dict(), "tracks": [t.to_dict() for t in playlist.tracks]})
+
+
+@app.route("/api/playlists/<int:playlist_id>/tracks", methods=["POST"])
+@api_login_required
+def api_add_playlist_track(playlist_id):
+    """Adds {"track_id": "local-3"}; 201 when added, 200 with added=false when it was already there."""
+    playlist = own_playlist(playlist_id)
+    if not playlist:
+        return jsonify({"error": "Playlist not found."}), 404
+    track = playable_track((request.get_json(silent=True) or {}).get("track_id"))
+    if not track:
+        return jsonify({"error": CATALOGUE_ONLY}), 400
+
+    added = add_to_playlist(playlist, track)
+    db.session.commit()
+    return jsonify({"playlist": playlist.to_dict(), "added": added}), 201 if added else 200
+
+
+@app.route("/api/track/play", methods=["POST"])
+def api_track_play():
+    """Records a play: {"track_id": "local-3"} for catalogue tracks, or {"track_id": <iTunes id>, "genre": ...}.
+
+    Catalogue plays bump the track's play count for everyone; signed-in users also get the play added
+    to their genre stats and receive their (possibly new) badge. Guests get {"recorded": false}.
+    """
+    data = request.get_json(silent=True) or {}
+    raw_id = data.get("track_id")
+    if raw_id is None:
+        return jsonify({"error": "Missing track_id."}), 400
+
+    track = None
+    if isinstance(raw_id, str) and raw_id.startswith("local-"):
+        track = playable_track(raw_id)
+        if not track:
+            return jsonify({"error": "Track not found."}), 404
+        track.play_count = (track.play_count or 0) + 1
+
+    recorded = current_user.is_authenticated
+    if recorded:
+        genre = track.genre if track else str(data.get("genre") or "")[:100]
+        record_genre_play(current_user.id, genre)
+        if track:
+            db.session.add(PlayHistory(user_id=current_user.id, track_id=track.id))
+    db.session.commit()
+    return jsonify({"recorded": recorded, "badge": get_user_genre_badge(current_user.id) if recorded else None})
+
+
+@app.route("/api/user/badge")
+@api_login_required
+def api_user_badge():
+    """{"badge": {"badge", "genre", "plays", "total_plays"}} or {"badge": null} before the first play."""
+    return jsonify({"badge": get_user_genre_badge(current_user.id)})
 
 
 LRCLIB_URL = "https://lrclib.net/api"
@@ -202,11 +358,12 @@ def logout():
 
 # ---------- CUSTOMER: HOME ----------
 
-@app.route("/")
 @app.route("/spa")
+@app.route("/")  # registered first (decorators apply bottom-up), so url_for("home") builds "/"
 def home():
     """The JS-driven single-page app (Violet Dusk redesign); /spa is kept as an alias for old links."""
-    return render_template("index.html")
+    badge = get_user_genre_badge(current_user.id) if current_user.is_authenticated else None
+    return render_template("index.html", badge=badge)
 
 
 @app.route("/classic")
@@ -257,9 +414,10 @@ def play_track(track_id):
     track.play_count += 1
     if current_user.is_authenticated:
         db.session.add(PlayHistory(user_id=current_user.id, track_id=track.id))
+        record_genre_play(current_user.id, track.genre)
     db.session.commit()
 
-    return redirect(url_for("home"))
+    return redirect(url_for("classic_home"))
 
 
 @app.route("/artist/<int:artist_id>")
@@ -518,31 +676,10 @@ def reject_track(track_id):
 
 # ---------- ENGAGEMENT: TAG + STREAK ----------
 
-GENRE_TAG_MAP = {
-    "Romantic": "Heartbroken Aashiq",
-    "HipHop": "Street Poet",
-    "EDM": "Bass Chaser",
-    "Devotional": "Sukoon Seeker",
-    "Retro": "Purani Yaadon Ka Deewana",
-    "Rock": "Chaos Bringer",
-    "Other": "Genre Explorer",
-}
-
-
 def compute_user_tag(user_id):
-    from sqlalchemy import func
-    result = (
-        db.session.query(Track.genre, func.count(PlayHistory.id).label("play_count"))
-        .join(PlayHistory, PlayHistory.track_id == Track.id)
-        .filter(PlayHistory.user_id == user_id)
-        .group_by(Track.genre)
-        .order_by(func.count(PlayHistory.id).desc())
-        .first()
-    )
-    if not result:
-        return None, None
-    top_genre = result[0]
-    return top_genre, GENRE_TAG_MAP.get(top_genre, "Genre Explorer")
+    """(top genre, badge title) for the profile pages; (None, None) before the first play."""
+    badge = get_user_genre_badge(user_id)
+    return (badge["genre"], badge["badge"]) if badge else (None, None)
 
 
 def func_date(column):

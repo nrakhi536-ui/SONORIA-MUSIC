@@ -26,26 +26,27 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 #   artist  - artist name; None shows "Unknown Artist" (and no artist line on the cover)
 #   album   - optional
 #   section - "trending" (Trending Now), "viral" (Viral on Reels & Shorts) or "artist" (Artists)
-#   genre   - optional: Romantic, HipHop, EDM, Devotional, Retro, Rock or Other
+#   genre   - drives listener badges (see badges.py): Romantic, Sad, Classical, Retro, Rock, Devotional,
+#             Party, Folk, Pop, Indie, EDM, Bollywood, Punjabi, Lofi, HipHop, or Other (counts toward no badge)
 # After editing, run:  python generate_media.py --force
 # The MP3 tags are missing or carry download-site spam ("- PagalNew"), so this table is the source of truth.
 # =====================================================================
 CATALOG = {
-    "Billo Rani.mp3":              dict(title="Billo Rani", artist="Anand Raj Anand", album="Goal", section="trending", genre="Retro"),
+    "Billo Rani.mp3":              dict(title="Billo Rani", artist="Anand Raj Anand", album="Goal", section="trending", genre="Party"),
     "Challa Jab Tak Hai Jaan.mp3": dict(title="Challa", artist="Rabbi Shergill", album="Jab Tak Hai Jaan", section="trending", genre="Rock"),
-    "Babli tero mobile.mp3":       dict(title="Babli Tero Mobile", artist="Gajendra rana and Meena rana" , section="trending"),
-    "Baby Doll.mp3":               dict(title="Baby Doll", artist="Dominic Fike", section="trending"),
+    "Babli tero mobile.mp3":       dict(title="Babli Tero Mobile", artist="Gajendra rana and Meena rana", section="trending", genre="Folk"),
+    "Baby Doll.mp3":               dict(title="Baby Doll", artist="Dominic Fike", section="trending", genre="Indie"),
     "Udi Udi.mp3":                 dict(title="Udi Udi", artist="Aneesh Pojari", section="trending"),
-    "End_of_Beginning.mp3":        dict(title="End of Beginning", artist="Djo", album="Decide", section="viral"),
-    "Earrings.mp3":                dict(title="Earrings", artist="Malcomm Tod", section="viral"),
-    "Honeypie.mp3":                dict(title="Honeypie", artist="Jawny", section="viral"),
-    "White keys.mp3":              dict(title="White Keys", artist="Dominic Fike", section="viral"),
+    "End_of_Beginning.mp3":        dict(title="End of Beginning", artist="Djo", album="Decide", section="viral", genre="Indie"),
+    "Earrings.mp3":                dict(title="Earrings", artist="Malcomm Tod", section="viral", genre="Indie"),
+    "Honeypie.mp3":                dict(title="Honeypie", artist="Jawny", section="viral", genre="Indie"),
+    "White keys.mp3":              dict(title="White Keys", artist="Dominic Fike", section="viral", genre="Indie"),
     "I love you baby.mp3":         dict(title="I Love You Baby", artist="Emilee Flood", section="viral", genre="Romantic"),
     "Perfect.mp3":                 dict(title="Perfect", artist="Ed Sheeran", album="÷", section="artist", genre="Romantic"),
-    "Baby.mp3":                    dict(title="Baby", artist="Justin Bieber", album="My World 2.0", section="artist"),
+    "Baby.mp3":                    dict(title="Baby", artist="Justin Bieber", album="My World 2.0", section="artist", genre="Pop"),
     "Nayan Ne Bandh Rakhine.mp3":  dict(title="Nayan Ne Bandh Rakhine", artist="Darshan Raval", section="artist", genre="Romantic"),
-    "Pani Da Rang.mp3":            dict(title="Pani Da Rang", artist="Ayushmann Khurrana", album="Vicky Donor", section="artist", genre="Romantic"),
-    "Kabhi Kabhi aditi.mp3":       dict(title="Kabhi Kabhi Aditi", artist="Rashid Ali", album="Jaane Tu... Ya Jaane Na", section="artist", genre="Romantic"),
+    "Pani Da Rang.mp3":            dict(title="Pani Da Rang", artist="Ayushmann Khurrana", album="Vicky Donor", section="artist", genre="Sad"),
+    "Kabhi Kabhi aditi.mp3":       dict(title="Kabhi Kabhi Aditi", artist="Rashid Ali", album="Jaane Tu... Ya Jaane Na", section="artist", genre="Bollywood"),
 }
 
 

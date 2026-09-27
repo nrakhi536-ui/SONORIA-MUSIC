@@ -23,6 +23,12 @@ const state = {
   homeLoaded: false,    // iTunes-backed home rows
   localLoaded: false,   // locally hosted rows from /api/home_sections
   seeking: false,       // true while the user drags the progress bar
+  signedIn: document.body.dataset.signedIn === "true",
+  playlists: [],        // the user's playlists: {id, name, track_count}
+  playlistTracks: [],   // tracks of the playlist open in the playlist view
+  currentPlaylistId: null,
+  loadSeq: 0,           // bumps on every track load, so each load records at most one play
+  recordedSeq: 0,
   errorStreak: 0,       // consecutive load failures, to stop auto-skip cascades
 };
 
@@ -50,6 +56,7 @@ const SEARCH_MIN_CHARS = 2;
 const SEEK_STEP_SECONDS = 5;
 const MAX_AUTO_SKIPS = 3;
 const EQ_MARKUP = '<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>';
+const PLUS_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 
 const audio = document.getElementById("audio-player");
 
@@ -76,6 +83,9 @@ const lyricsBtn = $("lyrics-btn");
 const sidePanel = $("side-panel");
 const stage = $("stage");
 const canvasVideo = $("canvas-video");
+const playerAddBtn = $("player-add-btn");
+const playlistModal = $("playlist-modal");
+const genreBadge = $("genre-badge"); // only rendered for signed-in users
 const searchForm = $("search-form");
 const searchInput = $("search-input");
 const mainWorkspace = $("main-workspace");
@@ -176,6 +186,22 @@ function likedTracks() {
 }
 
 // ===== Renderers =====
+// "+" (Add to Playlist) button for Sonoria catalogue tracks; iTunes previews can't go in playlists.
+function addToPlaylistButton(track) {
+  if (!track.local) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "icon-btn add-btn";
+  btn.title = "Add to playlist";
+  btn.setAttribute("aria-label", `Add “${track.title || "track"}” to a playlist`);
+  btn.innerHTML = PLUS_SVG;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openPlaylistModal(track);
+  });
+  return btn;
+}
+
 // Every renderer takes the list the item belongs to so a click queues that exact list.
 function renderCard(track, list, index) {
   const div = document.createElement("div");
@@ -188,6 +214,8 @@ function renderCard(track, list, index) {
     <div class="subtitle">${escapeHtml(track.artist)}</div>
   `;
   setCover(div.querySelector(".cover"), track.cover);
+  const addBtn = addToPlaylistButton(track);
+  if (addBtn) div.appendChild(addBtn);
   bindPlay(div, list, index);
   return div;
 }
@@ -233,6 +261,8 @@ function renderChartRow(track, list, index) {
     </div>
     <div class="duration">${formatTime((track.duration || 0) / 1000)}</div>
   `;
+  const addBtn = addToPlaylistButton(track);
+  if (addBtn) div.querySelector(".duration").before(addBtn);
   setCover(div.querySelector(".mini-cover"), track.cover);
   bindPlay(div, list, index);
   return div;
@@ -255,7 +285,10 @@ function renderLibraryRow(track, list, index) {
     </td>
     <td class="col-album">${escapeHtml(track.album)}</td>
     <td class="col-duration">${formatTime((track.duration || 0) / 1000)}</td>
+    <td class="col-actions"></td>
   `;
+  const addBtn = addToPlaylistButton(track);
+  if (addBtn) tr.querySelector(".col-actions").appendChild(addBtn);
   setCover(tr.querySelector(".mini-cover"), track.cover);
   bindPlay(tr, list, index);
   return tr;
@@ -285,8 +318,11 @@ function renderQueueItem(track, onClick) {
 }
 
 function bindPlay(el, list, index) {
-  el.addEventListener("click", () => playTrack(list, index));
+  el.addEventListener("click", (e) => {
+    if (!e.target.closest("button")) playTrack(list, index);
+  });
   el.addEventListener("keydown", (e) => {
+    if (e.target !== el) return; // a nested button handles its own keys
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       playTrack(list, index);
@@ -340,6 +376,7 @@ function loadCurrent() {
   if (!track) return;
 
   audio.src = track.stream_url;
+  state.loadSeq += 1;
   resetProgress();
   audio.play().catch(handlePlayRejection);
 
@@ -428,6 +465,7 @@ function updateNowPlayingUI() {
   npTitle.textContent = t.title || "Untitled";
   npArtist.textContent = t.artist || "";
   document.title = `${t.title} · ${t.artist} — Sonoria`;
+  playerAddBtn.hidden = !t.local;
   updateHeart();
   updateStage();
   updateMediaSession();
@@ -572,6 +610,10 @@ audio.addEventListener("waiting", () => playBtn.classList.add("loading"));
 audio.addEventListener("playing", () => {
   playBtn.classList.remove("loading");
   state.errorStreak = 0;
+  if (state.recordedSeq !== state.loadSeq) {
+    state.recordedSeq = state.loadSeq;
+    recordPlay(currentTrack());
+  }
 });
 audio.addEventListener("canplay", () => playBtn.classList.remove("loading"));
 
@@ -622,7 +664,7 @@ heartBtn.addEventListener("click", () => {
 
 // Space toggles playback unless the user is typing or focused on a control
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.panel) {
+  if (e.key === "Escape" && state.panel && !playlistModal.open) {
     closePanel();
     return;
   }
@@ -852,6 +894,7 @@ function showView(view) {
 
   if (view === "home") loadHome();
   if (view === "library") renderLibrary();
+  if (view !== "playlist") state.currentPlaylistId = null;
 }
 
 function setActiveNav(link) {
@@ -1059,6 +1102,288 @@ async function loadItunesSections() {
   }
 }
 
+// ===== Genre badge =====
+async function recordPlay(track) {
+  if (!track || (!track.local && !state.signedIn)) return; // guests only bump catalogue play counts
+  try {
+    const resp = await fetch("/api/track/play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: track.id, genre: track.genre || null }),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.recorded) updateBadge(data.badge);
+  } catch {
+    // Stats are best-effort; playback carries on regardless.
+  }
+}
+
+function updateBadge(badge) {
+  if (!genreBadge) return;
+  if (!badge) {
+    genreBadge.hidden = true;
+    return;
+  }
+  const previous = genreBadge.hidden ? "" : genreBadge.textContent.trim();
+  genreBadge.textContent = badge.badge;
+  genreBadge.title = "Your listener badge" + (badge.genre ? ` · top genre: ${badge.genre}` : "");
+  genreBadge.hidden = false;
+  if (previous === badge.badge) return;
+
+  genreBadge.classList.remove("updated");
+  void genreBadge.offsetWidth; // restart the pop animation
+  genreBadge.classList.add("updated");
+  showToast(previous ? `New badge unlocked: ${badge.badge}` : `You earned a badge: ${badge.badge}`, { tone: "info" });
+}
+
+// ===== Playlists: API =====
+async function apiJSON(url, options = {}) {
+  const resp = await fetch(url, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  let data = {};
+  try { data = await resp.json(); } catch { /* empty or non-JSON body */ }
+  if (!resp.ok) throw new Error(data.error || `Request failed (${resp.status})`);
+  return data;
+}
+
+async function loadPlaylists() {
+  if (!state.signedIn) return;
+  try {
+    const { playlists } = await apiJSON("/api/playlists");
+    state.playlists = playlists;
+    renderSidebarPlaylists();
+  } catch {
+    // Sidebar list is a convenience; the modal reports its own errors.
+  }
+}
+
+function renderSidebarPlaylists() {
+  const box = $("sidebar-playlists");
+  box.innerHTML = "";
+  state.playlists.forEach((pl) => {
+    const link = document.createElement("a");
+    link.className = "nav-link";
+    link.dataset.view = "playlist";
+    link.dataset.playlistId = pl.id;
+    link.href = `#playlist-${pl.id}`;
+    link.innerHTML = `
+      <span class="playlist-dot" aria-hidden="true">♪</span>
+      <span class="pl-name">${escapeHtml(pl.name)}</span>
+      <span class="nav-count">${pl.track_count}</span>
+    `;
+    link.classList.toggle("active", state.currentView === "playlist" && state.currentPlaylistId === pl.id);
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      history.replaceState(null, "", `#playlist-${pl.id}`);
+      openPlaylist(pl.id);
+    });
+    box.appendChild(link);
+  });
+}
+
+// ===== Playlist view =====
+async function openPlaylist(id) {
+  showView("playlist");
+  state.currentPlaylistId = id;
+  setActiveNav(document.querySelector(`.nav-link[data-playlist-id="${id}"]`));
+
+  const rows = $("playlist-rows");
+  rows.innerHTML = "";
+  $("playlist-empty").hidden = true;
+  $("playlist-play").disabled = true;
+  const known = state.playlists.find((pl) => pl.id === id);
+  $("playlist-title").textContent = known ? known.name : "Playlist";
+  $("playlist-stats").textContent = "Loading…";
+
+  try {
+    const data = await apiJSON(`/api/playlists/${id}`);
+    if (state.currentPlaylistId !== id) return; // user moved on while this loaded
+    renderPlaylistView(data);
+  } catch (err) {
+    if (state.currentPlaylistId !== id) return;
+    $("playlist-stats").textContent = err.message;
+  }
+}
+
+function renderPlaylistView(data) {
+  const tracks = data.tracks;
+  const n = tracks.length;
+  const totalSeconds = tracks.reduce((sum, t) => sum + (t.duration || 0), 0) / 1000;
+  state.playlistTracks = tracks;
+
+  $("playlist-title").textContent = data.name;
+  $("playlist-stats").textContent =
+    `${n} Track${n !== 1 ? "s" : ""}` + (n ? ` · ${Math.max(1, Math.round(totalSeconds / 60))} min` : "");
+  const art = $("playlist-art");
+  setCover(art, tracks[0]?.cover);
+  art.classList.toggle("has-art", !!tracks[0]?.cover);
+  $("playlist-empty").hidden = n > 0;
+  $("playlist-play").disabled = n === 0;
+
+  const rows = $("playlist-rows");
+  rows.innerHTML = "";
+  tracks.forEach((t, i) => rows.appendChild(renderLibraryRow(t, tracks, i)));
+  highlightPlaying();
+}
+
+$("playlist-play").addEventListener("click", () => {
+  if (state.playlistTracks.length) playTrack(state.playlistTracks, 0);
+});
+
+// ===== Add to Playlist modal =====
+let modalTrack = null;       // the track being added, or null when opened from "New Playlist"
+let modalRequestId = 0;
+
+function openPlaylistModal(track) {
+  if (!state.signedIn) {
+    showToast("Log in to create playlists and save songs to them.", { tone: "warn" });
+    return;
+  }
+  modalTrack = track;
+  const cover = $("playlist-modal-cover");
+  cover.hidden = !track;
+  setCover(cover, track?.cover);
+  $("playlist-modal-title").textContent = track ? "Add to Playlist" : "New Playlist";
+  $("playlist-modal-subtitle").textContent = track
+    ? `${track.title || "Untitled"} · ${track.artist || ""}`
+    : "Name it, then add songs with the + button.";
+  $("playlist-name-input").value = "";
+  $("playlist-modal-error").textContent = "";
+  $("playlist-create-btn").disabled = false;
+
+  if (!playlistModal.open) playlistModal.showModal();
+  $("playlist-name-input").focus();
+  renderModalList();
+}
+
+function closePlaylistModal() {
+  if (playlistModal.open) playlistModal.close();
+}
+
+async function renderModalList() {
+  const list = $("playlist-modal-list");
+  const requestId = ++modalRequestId;
+  showMessage(list, "Loading your playlists…");
+  try {
+    const query = modalTrack ? `?track_id=${encodeURIComponent(modalTrack.id)}` : "";
+    const { playlists } = await apiJSON(`/api/playlists${query}`);
+    if (requestId !== modalRequestId) return;
+    state.playlists = playlists;
+    renderSidebarPlaylists();
+
+    if (!playlists.length) return showMessage(list, "No playlists yet. Create your first one above.");
+    list.innerHTML = "";
+    playlists.forEach((pl) => list.appendChild(renderModalRow(pl)));
+  } catch (err) {
+    if (requestId === modalRequestId) showMessage(list, err.message);
+  }
+}
+
+function renderModalRow(pl) {
+  const row = document.createElement("div");
+  row.className = "modal-row";
+  row.innerHTML = `
+    <div class="pl-icon" aria-hidden="true">♪</div>
+    <div class="pl-meta">
+      <div class="pl-name">${escapeHtml(pl.name)}</div>
+      <div class="pl-count">${pl.track_count} track${pl.track_count !== 1 ? "s" : ""}</div>
+    </div>
+  `;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  if (!modalTrack) {
+    btn.className = "pill-btn ghost";
+    btn.textContent = "Open";
+    btn.addEventListener("click", () => {
+      closePlaylistModal();
+      history.replaceState(null, "", `#playlist-${pl.id}`);
+      openPlaylist(pl.id);
+    });
+  } else if (pl.contains_track) {
+    btn.className = "pill-btn done";
+    btn.textContent = "Added";
+    btn.disabled = true;
+  } else {
+    btn.className = "pill-btn";
+    btn.textContent = "Add";
+    btn.setAttribute("aria-label", `Add to ${pl.name}`);
+    btn.addEventListener("click", () => addTrackToPlaylist(pl, btn));
+  }
+  row.appendChild(btn);
+  return row;
+}
+
+async function addTrackToPlaylist(pl, btn) {
+  const track = modalTrack;
+  btn.disabled = true;
+  try {
+    const data = await apiJSON(`/api/playlists/${pl.id}/tracks`, {
+      method: "POST",
+      body: JSON.stringify({ track_id: track.id }),
+    });
+    showToast(data.added ? `Added to ${pl.name}` : `Already in ${pl.name}`, { duration: 2200 });
+    closePlaylistModal();
+    afterPlaylistChange(pl.id);
+  } catch (err) {
+    btn.disabled = false;
+    $("playlist-modal-error").textContent = err.message;
+  }
+}
+
+$("playlist-create-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("playlist-name-input");
+  const name = input.value.trim();
+  const error = $("playlist-modal-error");
+  if (!name) {
+    error.textContent = "Give the playlist a name.";
+    input.focus();
+    return;
+  }
+  const createBtn = $("playlist-create-btn");
+  createBtn.disabled = true;
+  error.textContent = "";
+  const track = modalTrack;
+  try {
+    const data = await apiJSON("/api/playlists", {
+      method: "POST",
+      body: JSON.stringify(track ? { name, track_id: track.id } : { name }),
+    });
+    const pl = data.playlist;
+    showToast(track ? `Created “${pl.name}” and added “${track.title}”` : `Created “${pl.name}”`, { duration: 2600 });
+    closePlaylistModal();
+    await afterPlaylistChange(pl.id);
+    if (!track) {
+      history.replaceState(null, "", `#playlist-${pl.id}`);
+      openPlaylist(pl.id);
+    }
+  } catch (err) {
+    error.textContent = err.message;
+  } finally {
+    createBtn.disabled = false;
+  }
+});
+
+// Refresh the sidebar counts, and the open playlist if it is the one that changed
+async function afterPlaylistChange(playlistId) {
+  await loadPlaylists();
+  if (state.currentView === "playlist" && state.currentPlaylistId === playlistId) openPlaylist(playlistId);
+}
+
+$("playlist-name-input").addEventListener("input", () => { $("playlist-modal-error").textContent = ""; });
+$("playlist-modal-close").addEventListener("click", closePlaylistModal);
+playlistModal.addEventListener("click", (e) => {
+  if (e.target === playlistModal) closePlaylistModal(); // click on the backdrop
+});
+$("new-playlist-btn").addEventListener("click", () => openPlaylistModal(null));
+playerAddBtn.addEventListener("click", () => {
+  const t = currentTrack();
+  if (t) openPlaylistModal(t);
+});
+
 // ===== Init =====
 if (typeof savedPlayer.volume === "number") {
   audio.volume = Math.min(1, Math.max(0, savedPlayer.volume));
@@ -1073,7 +1398,14 @@ updateLikedCount();
 buildStageBars();
 renderExplore();
 
-// Honour #explore / #library deep links on load; default to home
-const initialView = ["explore", "library"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "home";
-setActiveNav(document.querySelector(`.nav-link[data-view="${initialView}"]`));
-showView(initialView);
+// Honour #explore / #library / #playlist-<id> deep links on load; default to home
+const hash = location.hash.slice(1);
+const playlistMatch = /^playlist-(\d+)$/.exec(hash);
+if (playlistMatch && state.signedIn) {
+  loadPlaylists().then(() => openPlaylist(Number(playlistMatch[1])));
+} else {
+  const initialView = ["explore", "library"].includes(hash) ? hash : "home";
+  setActiveNav(document.querySelector(`.nav-link[data-view="${initialView}"]`));
+  showView(initialView);
+  loadPlaylists();
+}

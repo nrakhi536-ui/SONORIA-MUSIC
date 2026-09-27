@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
 </head>
-<body>
+<body data-signed-in="{{ 'true' if current_user.is_authenticated else 'false' }}">
 
   <div class="app-shell">
 
@@ -28,6 +28,10 @@
         <span class="playlist-dot">♥</span> Liked Songs
         <span class="nav-count" id="nav-liked-count">0</span>
       </a>
+      <div class="sidebar-playlists" id="sidebar-playlists"></div>
+      <button type="button" class="nav-link new-playlist-link" id="new-playlist-btn">
+        <span class="playlist-dot" aria-hidden="true">+</span> New Playlist
+      </button>
 
       <hr>
       {% if current_user.is_authenticated %}
@@ -50,9 +54,17 @@
           <input type="search" id="search-input" autocomplete="off"
                  placeholder="Search Songs, Albums, Artists..." aria-label="Search music">
         </form>
-        <div class="avatar-badge"
-             title="{{ current_user.username if current_user.is_authenticated else 'Guest' }}">
-          {{ current_user.username[0]|upper if current_user.is_authenticated else '?' }}
+        <div class="user-cluster">
+          {% if current_user.is_authenticated %}
+            <span class="genre-badge" id="genre-badge"
+                  title="Your listener badge{% if badge and badge.genre %} · top genre: {{ badge.genre }}{% endif %}"
+                  {% if not badge %}hidden{% endif %}>{{ badge.badge if badge else '' }}</span>
+            <span class="user-name">{{ current_user.username }}</span>
+          {% endif %}
+          <div class="avatar-badge"
+               title="{{ current_user.username if current_user.is_authenticated else 'Guest' }}">
+            {{ current_user.username[0]|upper if current_user.is_authenticated else '?' }}
+          </div>
         </div>
       </header>
 
@@ -112,12 +124,38 @@
 
         <table class="library-table">
           <thead>
-            <tr><th>#</th><th>Title</th><th class="col-album">Album</th><th class="col-duration">Duration</th></tr>
+            <tr><th>#</th><th>Title</th><th class="col-album">Album</th><th class="col-duration">Duration</th><th class="col-actions"><span hidden>Actions</span></th></tr>
           </thead>
           <tbody id="library-rows"></tbody>
         </table>
         <p class="empty-msg" id="library-empty">
           Songs you like will show up here. Tap ♡ in the player to save one.
+        </p>
+      </section>
+
+      <!-- ===== USER PLAYLIST VIEW ===== -->
+      <section class="view" id="view-playlist" data-view="playlist" hidden>
+        <div class="playlist-hero">
+          <div class="playlist-cover playlist-art" id="playlist-art" aria-hidden="true">♪</div>
+          <div class="playlist-meta">
+            <div class="playlist-kind">Playlist</div>
+            <h1 class="playlist-title" id="playlist-title">Playlist</h1>
+            <div class="playlist-stats" id="playlist-stats">0 Tracks</div>
+          </div>
+        </div>
+
+        <div class="action-bar">
+          <button type="button" class="hero-play" id="playlist-play" aria-label="Play playlist">▶</button>
+        </div>
+
+        <table class="library-table">
+          <thead>
+            <tr><th>#</th><th>Title</th><th class="col-album">Album</th><th class="col-duration">Duration</th><th class="col-actions"><span hidden>Actions</span></th></tr>
+          </thead>
+          <tbody id="playlist-rows"></tbody>
+        </table>
+        <p class="empty-msg" id="playlist-empty" hidden>
+          This playlist is empty. Tap + on any Sonoria track to add it here.
         </p>
       </section>
 
@@ -173,6 +211,9 @@
           <div class="np-artist" id="np-artist">Pick a track to start</div>
         </div>
         <button type="button" class="icon-btn heart-btn" id="heart-btn" aria-label="Add to Liked Songs" aria-pressed="false">♡</button>
+        <button type="button" class="icon-btn add-btn" id="player-add-btn" aria-label="Add to playlist" title="Add to playlist" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
       </div>
 
       <div class="player-center">
@@ -218,6 +259,34 @@
     </footer>
 
   </div>
+
+  <!-- ===== Add to Playlist modal ===== -->
+  <dialog class="modal" id="playlist-modal" aria-labelledby="playlist-modal-title">
+    <div class="modal-head">
+      <div class="modal-track">
+        <div class="mini-cover" id="playlist-modal-cover" hidden></div>
+        <div class="modal-heading">
+          <h2 class="modal-title" id="playlist-modal-title">Add to Playlist</h2>
+          <div class="modal-subtitle" id="playlist-modal-subtitle"></div>
+        </div>
+      </div>
+      <button type="button" class="icon-btn" id="playlist-modal-close" aria-label="Close">✕</button>
+    </div>
+
+    <form class="modal-create" id="playlist-create-form" autocomplete="off">
+      <label class="modal-label" for="playlist-name-input">Create New Playlist</label>
+      <div class="modal-create-row">
+        <input type="text" id="playlist-name-input" maxlength="100" placeholder="My Playlist">
+        <button type="submit" class="pill-btn" id="playlist-create-btn">Create</button>
+      </div>
+      <div class="modal-error" id="playlist-modal-error" role="alert"></div>
+    </form>
+
+    <div class="modal-list-wrap">
+      <div class="modal-label">Your Playlists</div>
+      <div class="modal-list" id="playlist-modal-list"></div>
+    </div>
+  </dialog>
 
   <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
 
