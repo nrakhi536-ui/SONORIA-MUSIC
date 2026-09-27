@@ -47,8 +47,8 @@ You can open a view directly with a link like `/#library` or `/#explore`.
 | --- | --- |
 | `GET /api/search?q=<term>` | `{results: [track], error}`: up to 25 iTunes songs |
 | `GET /api/songs` | `{sections: {"Chill": [...], "Top Hits": [...], "Synthwave": [...]}}` for the home page |
-| `GET /api/lyrics?artist=<a>&title=<t>[&album=<al>&duration=<sec>]` | `{lines: [str], instrumental, error}`; 404 if no lyrics are found |
-| `GET /api/home_sections` | `{sections: [{key, title, tracks: [track]}]}` for the local catalogue: Trending Now, Viral on Reels & Shorts, Artists |
+| `GET /api/lyrics?artist=<a>&title=<t>[&album=<al>&duration=<sec>]` | `{lines: [str], synced: [{time, text}] \| null, instrumental, error}`; 404 if no lyrics are found. `synced` is only set when LRCLIB's recording is within 4 s of `duration` |
+| `GET /api/home_sections` | `{sections: [{key, title, tracks: [track]}]}` for the local catalogue: Trending Now, Viral on Reels & Shorts, Artists. Tracks come back in a new random order on every call |
 | `GET /api/playlists[?track_id=local-3]` | `{playlists: [{id, name, track_count, created_at, contains_track?}]}` for the signed-in user |
 | `POST /api/playlists` | Body `{name, track_id?}`: creates a playlist, optionally adding a track straight away |
 | `GET /api/playlists/<id>` | `{id, name, track_count, created_at, tracks: [track]}` |
@@ -71,9 +71,12 @@ Put MP3s in `static/media/audio/`, then run:
 ```bash
 pip install -r requirements-dev.txt
 python generate_media.py          # add --force to re-render existing covers and videos
+python generate_media.py --force --seed 7   # a different set of palettes, fonts and visualizers
 ```
 For each MP3 this writes a 600×600 cover to `static/media/covers/` and a 10-second looping MP4 to
-`static/media/video/`. The video pulses to the song's own audio. It also adds or updates the track in the database.
+`static/media/video/`. Each track gets its own palette, title font and cover pattern (drawn from the song's
+loudness), plus one of four audio-reactive video visualizers: ring, bars, wave or pulse. The same `--seed` always
+gives the same looks. It also adds or updates the track in the database.
 Titles, artists and home-page sections come from the `CATALOG` table at the top of `generate_media.py`. Edit it
 and re-run to change them. In the SPA, switch the player to **Video** to see a track's Canvas loop.
 

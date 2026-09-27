@@ -55,6 +55,9 @@ const SEARCH_DEBOUNCE_MS = 400;
 const SEARCH_MIN_CHARS = 2;
 const SEEK_STEP_SECONDS = 5;
 const MAX_AUTO_SKIPS = 3;
+const LYRIC_LEAD_SECONDS = 0.2;      // light a line up just before it is sung
+const LYRIC_MANUAL_SCROLL_MS = 4000; // after the user scrolls the lyrics, leave them be this long
+const SHARE_MAX_CHARS = 400;
 const EQ_MARKUP = '<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>';
 const PLUS_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 
@@ -86,6 +89,9 @@ const canvasVideo = $("canvas-video");
 const playerAddBtn = $("player-add-btn");
 const playlistModal = $("playlist-modal");
 const genreBadge = $("genre-badge"); // only rendered for signed-in users
+const shareModal = $("share-modal");
+const lyricsScroller = $("panel-lyrics");
+const lyricsBody = $("lyrics-body");
 const searchForm = $("search-form");
 const searchInput = $("search-input");
 const mainWorkspace = $("main-workspace");
@@ -664,7 +670,7 @@ heartBtn.addEventListener("click", () => {
 
 // Space toggles playback unless the user is typing or focused on a control
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.panel && !playlistModal.open) {
+  if (e.key === "Escape" && state.panel && !document.querySelector("dialog[open]")) {
     closePanel();
     return;
   }
@@ -840,10 +846,18 @@ function renderQueue() {
 
 let lyricsRequestId = 0;
 
+// What the lyrics panel is showing: synced = [{time, text}] when timed lyrics match the playing audio
+const lyricsView = { trackId: null, synced: null, activeIndex: -1, userScrollUntil: 0 };
+let lyricsTicking = false;
+
 async function loadLyrics() {
   const head = $("lyrics-head");
-  const body = $("lyrics-body");
+  const body = lyricsBody;
   const t = currentTrack();
+  lyricsView.trackId = t ? t.id : null;
+  lyricsView.synced = null;
+  lyricsView.activeIndex = -1;
+  body.classList.remove("is-synced");
   if (!t) {
     head.innerHTML = "";
     showMessage(body, "Play a song to see its lyrics.");
@@ -858,11 +872,32 @@ async function loadLyrics() {
   const renderLyrics = (data) => {
     if (data.error) return showMessage(body, data.error);
     if (data.instrumental) return showMessage(body, "♪ This track is instrumental.");
-    body.innerHTML = data.lines
-      .map((line) => (line.trim() ? `<p>${escapeHtml(line)}</p>` : '<p class="gap"></p>'))
-      .join("") +
-      (t.local ? "" : '<p class="lyrics-note">Lyrics are for the full song; the preview plays a 30-second excerpt.</p>');
-    body.scrollTop = 0;
+
+    // Timings only line up with full-length local recordings; iTunes previews are a 30 s excerpt.
+    const synced = t.local && Array.isArray(data.synced) && data.synced.length ? data.synced : null;
+    lyricsView.synced = synced;
+    body.classList.toggle("is-synced", !!synced);
+    if (synced) {
+      head.insertAdjacentHTML("beforeend", '<div class="lyrics-sync-badge">Live synced</div>');
+      body.innerHTML = synced
+        .map((line, i) => line.text
+          ? `<p class="lyric-line" data-index="${i}" tabindex="0">${escapeHtml(line.text)}</p>`
+          : `<p class="lyric-line break" data-index="${i}" aria-hidden="true">♪ ♪ ♪</p>`)
+        .join("") +
+        '<p class="lyrics-note">Tap a line, or select a few, to share them.</p>';
+    } else {
+      const note = t.local
+        ? "Timed lyrics aren't available for this recording. Tap a line to share it."
+        : "Lyrics are for the full song; the preview plays a 30-second excerpt, so they aren't synced. Tap a line to share it.";
+      body.innerHTML = data.lines
+        .map((line) => (line.trim() ? `<p class="lyric-line" tabindex="0">${escapeHtml(line)}</p>` : '<p class="gap"></p>'))
+        .join("") +
+        `<p class="lyrics-note">${note}</p>`;
+    }
+    lyricsScroller.scrollTop = 0;
+    lyricsView.userScrollUntil = 0;
+    syncLyrics({ instant: true });
+    startLyricsClock();
   };
 
   if (state.lyricsCache.has(t.id)) return renderLyrics(state.lyricsCache.get(t.id));
@@ -882,6 +917,180 @@ async function loadLyrics() {
     if (requestId === lyricsRequestId) showMessage(body, "Could not reach the lyrics service right now.");
   }
 }
+
+// ===== Synced lyrics: highlight the current line and keep it in view =====
+function currentLyricIndex(synced, seconds) {
+  let lo = 0;
+  let hi = synced.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (synced[mid].time <= seconds) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+function syncLyrics({ instant = false } = {}) {
+  const synced = lyricsView.synced;
+  const t = currentTrack();
+  if (!synced || state.panel !== "lyrics" || !t || t.id !== lyricsView.trackId) return;
+
+  const index = currentLyricIndex(synced, audio.currentTime + LYRIC_LEAD_SECONDS);
+  if (index === lyricsView.activeIndex && !instant) return;
+  lyricsView.activeIndex = index;
+
+  const lines = lyricsBody.querySelectorAll(".lyric-line");
+  lines.forEach((el, i) => {
+    el.classList.toggle("active", i === index);
+    el.classList.toggle("past", i < index);
+  });
+  const active = lines[index];
+  if (active && Date.now() > lyricsView.userScrollUntil) {
+    // Keep the sung line a little above the middle, like karaoke
+    const top = active.offsetTop - lyricsScroller.clientHeight * 0.38;
+    lyricsScroller.scrollTo({ top: Math.max(0, top), behavior: instant ? "auto" : "smooth" });
+  }
+}
+
+function startLyricsClock() {
+  if (lyricsTicking) return;
+  lyricsTicking = true;
+  const tick = () => {
+    if (audio.paused || !lyricsView.synced || state.panel !== "lyrics") {
+      lyricsTicking = false;
+      return;
+    }
+    syncLyrics();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+audio.addEventListener("play", startLyricsClock);
+audio.addEventListener("seeked", () => {
+  lyricsView.userScrollUntil = 0; // a seek means "take me there"
+  syncLyrics({ instant: true });
+});
+
+// Scrolling the lyrics by hand pauses auto-scroll for a moment
+["wheel", "touchmove"].forEach((type) => {
+  lyricsScroller.addEventListener(type, () => {
+    lyricsView.userScrollUntil = Date.now() + LYRIC_MANUAL_SCROLL_MS;
+  }, { passive: true });
+});
+
+// ===== Share Lyrics overlay =====
+let shareQuote = null; // {text, title, artist, cover}
+
+function selectedLyricsText() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !lyricsBody.contains(selection.anchorNode)) return "";
+  return selection.toString().replace(/\n{2,}/g, "\n").trim();
+}
+
+function openShareModal(text) {
+  const t = currentTrack();
+  const lyricsTrack = t && t.id === lyricsView.trackId ? t : null;
+  const clean = text.trim();
+  if (!clean) return;
+  shareQuote = {
+    text: clean.length > SHARE_MAX_CHARS ? `${clean.slice(0, SHARE_MAX_CHARS - 1).trimEnd()}…` : clean,
+    title: lyricsTrack?.title || $("lyrics-head").querySelector(".t")?.textContent || "",
+    artist: lyricsTrack?.artist || $("lyrics-head").querySelector(".a")?.textContent || "",
+    cover: lyricsTrack?.cover || "",
+  };
+
+  $("quote-text").textContent = shareQuote.text;
+  $("quote-title").textContent = shareQuote.title;
+  $("quote-artist").textContent = shareQuote.artist;
+  setCover($("quote-cover"), shareQuote.cover);
+  $("quote-card").style.setProperty("--quote-cover", shareQuote.cover ? `url(${JSON.stringify(shareQuote.cover)})` : "none");
+  resetCopyButton();
+  $("share-native").hidden = typeof navigator.share !== "function";
+
+  if (!shareModal.open) shareModal.showModal();
+  $("share-copy").focus();
+}
+
+function shareMessage() {
+  const q = shareQuote;
+  const credit = [q.title, q.artist].filter(Boolean).join(" · ");
+  return `“${q.text}”\n— ${credit}\n🎧 Listening on Sonoria`;
+}
+
+function resetCopyButton() {
+  const btn = $("share-copy");
+  btn.classList.remove("copied");
+  btn.querySelector(".share-label").textContent = "Copy quote";
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Older browsers / non-secure origins: copy from a hidden textarea inside the dialog
+    // (the rest of the page is inert while the modal is open).
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    shareModal.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}
+
+$("share-copy").addEventListener("click", async () => {
+  const btn = $("share-copy");
+  const ok = await copyToClipboard(shareMessage());
+  btn.classList.toggle("copied", ok);
+  btn.querySelector(".share-label").textContent = ok ? "Copied!" : "Couldn't copy";
+  setTimeout(resetCopyButton, 1800);
+});
+
+function openShareWindow(url) {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+$("share-x").addEventListener("click", () => {
+  openShareWindow(`https://x.com/intent/tweet?text=${encodeURIComponent(shareMessage())}`);
+});
+$("share-whatsapp").addEventListener("click", () => {
+  openShareWindow(`https://wa.me/?text=${encodeURIComponent(shareMessage())}`);
+});
+$("share-native").addEventListener("click", () => {
+  navigator.share({ title: `${shareQuote.title} lyrics`, text: shareMessage() }).catch(() => {
+    // Dismissed or unsupported target; nothing to do
+  });
+});
+$("share-modal-close").addEventListener("click", () => shareModal.close());
+shareModal.addEventListener("click", (e) => {
+  if (e.target === shareModal) shareModal.close(); // backdrop
+});
+
+// Click a line (or finish selecting some text) in the lyrics panel to share it
+lyricsBody.addEventListener("click", (e) => {
+  const selected = selectedLyricsText();
+  if (selected) return openShareModal(selected);
+  const line = e.target.closest(".lyric-line");
+  if (line && !line.classList.contains("break")) openShareModal(line.textContent);
+});
+lyricsBody.addEventListener("keydown", (e) => {
+  const line = e.target.closest(".lyric-line");
+  if (line && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault();
+    openShareModal(line.textContent);
+  }
+});
 
 // ===== View switching =====
 function showView(view) {

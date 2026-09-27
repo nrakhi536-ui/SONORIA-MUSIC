@@ -1,5 +1,5 @@
 """Genre badges: turns a user's per-genre play counts into a fun listener title."""
-from models import db, UserPlayCount
+from models import db, UserPlayCount, utc_now
 
 # Canonical genre -> badge title. These genre names are what UserPlayCount stores.
 GENRE_BADGES = {
@@ -68,7 +68,7 @@ def record_genre_play(user_id, raw_genre):
     row = UserPlayCount.query.filter_by(user_id=user_id, genre=genre).first()
     if row:
         row.play_count += 1
-        row.last_played_at = db.func.now()
+        row.last_played_at = utc_now()
     else:
         db.session.add(UserPlayCount(user_id=user_id, genre=genre, play_count=1))
 

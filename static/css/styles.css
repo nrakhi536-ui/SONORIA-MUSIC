@@ -1018,6 +1018,60 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 }
 .lyrics .empty-msg { margin-top: 0; font-size: var(--fs-body); font-style: italic; }
 
+/* ----- Clickable / synced lyric lines ----- */
+#panel-lyrics { position: relative; } /* offsetTop of lines is measured against the scroller */
+.lyrics .lyric-line { cursor: pointer; border-radius: 6px; }
+.lyrics .lyric-line:focus-visible { outline-offset: 4px; }
+.lyrics .lyric-line::after {
+  content: " ↗";
+  font-size: 0.75em;
+  color: var(--highlight-warmth);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.lyrics .lyric-line:hover::after,
+.lyrics .lyric-line:focus-visible::after { opacity: 1; }
+.lyrics .lyric-line.break::after { content: none; }
+.lyrics ::selection { color: var(--bg-midnight); background: var(--highlight-warmth); }
+
+.lyrics.is-synced .lyric-line {
+  margin: 0 0 12px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-faint);
+  transform-origin: left center;
+  transition: color 0.25s ease, transform 0.25s ease, text-shadow 0.25s ease;
+}
+.lyrics.is-synced .lyric-line.past { color: var(--text-muted); }
+.lyrics.is-synced .lyric-line.active {
+  color: var(--text-primary);
+  transform: scale(1.04);
+  text-shadow: 0 0 18px rgba(246, 219, 192, 0.35);
+}
+.lyrics.is-synced .lyric-line.break { cursor: default; letter-spacing: 0.3em; }
+.lyrics.is-synced .lyric-line:hover { color: var(--highlight-warmth); }
+.lyrics-sync-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  color: var(--highlight-warmth);
+  border: 1px solid rgba(246, 219, 192, 0.35);
+}
+.lyrics-sync-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--highlight-warmth);
+  box-shadow: 0 0 8px var(--highlight-warmth);
+}
+
 /* =====================================================================
    Video / Visualizer stage — overlays the main workspace
    ===================================================================== */
@@ -1255,7 +1309,7 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
   background-position: center;
 }
 .modal-head .mini-cover[hidden] { display: none; }
-.modal-heading { min-width: 0; }
+.modal-heading { flex: 1; min-width: 0; }
 .modal-title { font-size: var(--fs-h2); font-weight: 700; }
 .modal-subtitle { font-size: var(--fs-small); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
@@ -1322,6 +1376,91 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .modal-row .pl-meta { flex: 1; min-width: 0; }
 .modal-row .pl-name { font-weight: 600; font-size: 0.875rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .modal-row .pl-count { font-size: var(--fs-tiny); color: var(--text-muted); }
+
+/* =====================================================================
+   Share Lyrics overlay
+   ===================================================================== */
+.share-modal { width: min(480px, calc(100vw - 32px)); }
+.share-body { display: flex; flex-direction: column; gap: 16px; padding: 18px 20px 20px; overflow-y: auto; }
+.quote-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 22px;
+  min-height: 210px;
+  padding: 26px 24px 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(246, 219, 192, 0.18);
+  background: linear-gradient(145deg, var(--bg-primary), var(--surface));
+}
+.quote-card::before {
+  content: "";
+  position: absolute;
+  inset: -40px;
+  z-index: -1;
+  background: var(--quote-cover, none) center / cover;
+  filter: blur(26px) saturate(1.3) brightness(0.5);
+}
+.quote-text {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: pre-line;
+  color: var(--text-primary);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+.quote-text::before { content: "“"; color: var(--highlight-warmth); }
+.quote-text::after { content: "”"; color: var(--highlight-warmth); }
+.quote-source { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.quote-source .mini-cover {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: var(--cover-fallback);
+  background-size: cover;
+  background-position: center;
+}
+.quote-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.quote-meta .t { font-weight: 600; font-size: 0.875rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.quote-meta .a { font-size: var(--fs-tiny); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.quote-brand {
+  flex: 0 0 auto;
+  font-family: var(--font-heading);
+  font-size: var(--fs-tiny);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--highlight-warmth);
+}
+
+.share-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.share-actions:has(#share-native:not([hidden])) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.share-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-primary);
+  background: rgba(11, 7, 17, 0.55);
+  border: 1px solid var(--border-strong);
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+}
+.share-btn[hidden] { display: none; }
+.share-btn:hover { border-color: var(--highlight-warmth); background: var(--surface-raised); transform: translateY(-1px); }
+.share-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.share-btn svg.filled { fill: currentColor; stroke: none; }
+.share-btn.share-wa svg { color: #25D366; }
+.share-btn.copied { color: var(--bg-primary); background: var(--highlight-warmth); border-color: var(--highlight-warmth); }
 
 /* =====================================================================
    Responsive

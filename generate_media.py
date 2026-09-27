@@ -1,21 +1,28 @@
 """Builds cover art, 10-second Canvas loops, and database rows for every MP3 in static/media/audio/.
 
 For each track:
-  * static/media/covers/<slug>.jpg - 600x600 Violet Dusk cover with the track name
-  * static/media/video/<slug>.mp4  - 10 s seamless loop: the cover pulsing to the song's own
-                                     loudness, ringed by a spectrum visualizer
+  * static/media/covers/<slug>.jpg - 600x600 cover with the track name, in the track's own palette and font,
+                                     patterned with the song's actual loudness shape
+  * static/media/video/<slug>.mp4  - 10 s seamless loop: the cover pulsing to the song's own loudness,
+                                     with one of four audio-reactive visualizers (ring, bars, wave, pulse)
   * a Track row (section trending / viral / artist) owned by an artist User
 
-Usage:  python generate_media.py [--force]     (--force re-renders covers and videos that already exist)
+Usage:  python generate_media.py [--force] [--seed N]
+        --force  re-render covers and videos that already exist
+        --seed   pick a different set of looks (default 0; the same seed always gives the same art)
 """
 import argparse
+import colorsys
 import hashlib
 import math
 import re
 import os
+import random
 import secrets
+import subprocess
 from pathlib import Path
 
+import imageio_ffmpeg
 import numpy as np
 from moviepy import AudioFileClip, VideoClip
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -54,15 +61,12 @@ ROOT = Path(__file__).resolve().parent
 MEDIA = ROOT / "static" / "media"
 AUDIO_DIR, COVER_DIR, VIDEO_DIR = MEDIA / "audio", MEDIA / "covers", MEDIA / "video"
 
-# Violet Dusk palette
-PLUM, MAUVE, PEACH = (0x50, 0x2D, 0x55), (0x93, 0x50, 0x73), (0xF6, 0xDB, 0xC0)
-CREAM, DEEP = (0xF8, 0xF4, 0xE9), (0x1F, 0x10, 0x22)
-
 COVER_SIZE = 600
 VIDEO_SECONDS, VIDEO_FPS = 10, 24
 LOOP_FADE_SECONDS = 1.0   # envelope crossfade that makes the last frame flow into the first
 SAMPLE_RATE = 22050
 RING_BARS = 72
+WAVE_POINTS = 160         # samples per frame for the oscilloscope visualizer
 UNKNOWN_ARTIST = "Unknown Artist"
 
 def slugify(text):
@@ -79,9 +83,89 @@ def track_info(mp3):
     return info
 
 
-def track_seed(title):
-    """Stable per-track randomness so re-runs produce identical art."""
-    return int(hashlib.md5(title.encode("utf-8")).hexdigest()[:8], 16)
+def track_seed(title, seed=0):
+    """Stable per-track randomness (shifted by --seed) so re-runs produce identical art."""
+    return int(hashlib.md5(f"{seed}:{title}".encode("utf-8")).hexdigest()[:8], 16)
+
+
+# ---------- Visual styles ----------
+# Every track gets its own palette, title font, gradient, cover pattern and video visualizer.
+# The lists are shuffled by --seed and walked with different strides, so tracks next to each other
+# never share a combination. The same seed always gives the same look.
+
+def hex_rgb(value):
+    value = value.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
+
+PALETTES = [  # name, gradient stops (dark -> light), accent for text and visualizers
+    ("Violet Dusk", ["#502D55", "#935073", "#C4868C"], "#F6DBC0"),
+    ("Midnight Ocean", ["#0B1D3A", "#1F4E79", "#3FA7B5"], "#D8F3F0"),
+    ("Ember Sunset", ["#3A0F1E", "#B23A48", "#F28C38"], "#FFE3C2"),
+    ("Neon Orchid", ["#1A0B2E", "#6A1B9A", "#D65BE8"], "#F8D7FF"),
+    ("Forest Mist", ["#0F2A24", "#2E6B55", "#8DBF8B"], "#EAF5DC"),
+    ("Gold Noir", ["#141210", "#3D2E12", "#B8911F"], "#FFF1C1"),
+    ("Rose Quartz", ["#3B1C32", "#A64D79", "#F2A7C3"], "#FFE9F1"),
+    ("Electric Teal", ["#041C24", "#0E6E73", "#2FC9AE"], "#E0FFF8"),
+    ("Crimson Night", ["#1B0A12", "#6B1030", "#D7263D"], "#FFD6DC"),
+    ("Lavender Haze", ["#2A2250", "#6C5B9E", "#B8A9E8"], "#F4F0FF"),
+    ("Desert Dune", ["#2B1B12", "#8C5A3C", "#E0A96D"], "#FFF4E4"),
+    ("Arctic Blue", ["#0E1A2B", "#35598F", "#8FB8E8"], "#EEF6FF"),
+    ("Cobalt Flame", ["#0A1033", "#2438A6", "#E8615E"], "#FFE1E1"),
+    ("Sage Blush", ["#1E2A24", "#5E7D66", "#E0A9AE"], "#FFF0F0"),
+    ("Indigo Coral", ["#1B1440", "#4B3A9E", "#F07E6A"], "#FFE8E3"),
+]
+
+# Title fonts: (file, uppercase?). Only the ones installed are used; DejaVu covers Linux.
+TITLE_FONTS = [
+    ("seguibl.ttf", False), ("georgiab.ttf", False), ("impact.ttf", True), ("GILSANUB.TTF", False),
+    ("bahnschrift.ttf", True), ("palab.ttf", False), ("trebucbd.ttf", False), ("FRAMDCN.TTF", True),
+    ("segoeprb.ttf", False), ("constanb.ttf", False),
+    ("DejaVuSans-Bold.ttf", False), ("DejaVuSerif-Bold.ttf", False), ("DejaVuSansCondensed-Bold.ttf", True),
+]
+COVER_PATTERNS = ["bars", "wave", "rings", "dots", "line"]
+VIDEO_STYLES = ["ring", "bars", "wave", "pulse"]
+GRADIENTS = ["linear", "radial"]
+LAYOUTS = ["left", "center"]
+
+
+def jitter_hue(rgb, shift):
+    h, l, s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    return tuple(int(round(c * 255)) for c in colorsys.hls_to_rgb((h + shift) % 1.0, l, s))
+
+
+def assign_styles(infos, seed=0):
+    """One style dict per track, in the same order as infos."""
+    shuffler = random.Random(seed)
+    lists = {
+        "palette": PALETTES[:], "font": [f for f in TITLE_FONTS if find_font(f[0])] or [(BOLD_FONTS[0], False)],
+        "pattern": COVER_PATTERNS[:], "video": VIDEO_STYLES[:], "gradient": GRADIENTS[:], "layout": LAYOUTS[:],
+    }
+    for items in lists.values():
+        shuffler.shuffle(items)
+    strides = {"palette": 1, "font": 3, "pattern": 2, "video": 3, "gradient": 1, "layout": 1}
+
+    styles = []
+    for n, info in enumerate(infos):
+        rng = random.Random(track_seed(info["title"], seed))
+        pick = {key: items[(n * strides[key]) % len(items)] for key, items in lists.items()}
+        pick["layout"] = lists["layout"][(n // 2) % len(lists["layout"])]  # not in lockstep with gradient
+        name, stops, accent = pick["palette"]
+        shift = rng.uniform(-0.03, 0.03)
+        styles.append({
+            "palette": name,
+            "stops": [jitter_hue(hex_rgb(c), shift) for c in stops],
+            "accent": hex_rgb(accent),
+            "font": pick["font"][0],
+            "uppercase": pick["font"][1],
+            "pattern": pick["pattern"],
+            "video": pick["video"],
+            "gradient": pick["gradient"],
+            "layout": pick["layout"],
+            "angle": rng.uniform(0, 2 * math.pi),
+            "glow": (rng.uniform(0.2, 0.8), rng.uniform(0.12, 0.4)),
+        })
+    return styles
 
 
 # ---------- Fonts ----------
@@ -91,11 +175,18 @@ BOLD_FONTS = ["segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf", "Arial Bold.
 REGULAR_FONTS = ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf", "Arial.ttf"]
 
 
-def load_font(candidates, size):
+def find_font(name):
     for folder in FONT_DIRS:
-        for name in candidates:
-            if (folder / name).exists():
-                return ImageFont.truetype(str(folder / name), size)
+        if (folder / name).exists():
+            return folder / name
+    return None
+
+
+def load_font(candidates, size):
+    for name in candidates:
+        path = find_font(name)
+        if path:
+            return ImageFont.truetype(str(path), size)
     return ImageFont.load_default(size)
 
 
@@ -111,80 +202,29 @@ def wrap_text(draw, text, font, max_width):
     return lines + [line] if line else lines
 
 
-# ---------- Cover art ----------
-
-def gradient(size, angle, stops):
-    """Linear gradient across the square at `angle` radians through the given RGB stops."""
-    y, x = np.mgrid[0:size, 0:size] / (size - 1)
-    t = (x - 0.5) * math.cos(angle) + (y - 0.5) * math.sin(angle)
-    t = (t - t.min()) / (t.max() - t.min())
-    positions = np.linspace(0, 1, len(stops))
-    channels = [np.interp(t, positions, [c[i] for c in stops]) for i in range(3)]
-    return Image.fromarray(np.stack(channels, axis=-1).astype(np.uint8))
-
-
-def make_cover(info, out_path):
-    rng = np.random.default_rng(track_seed(info["title"]))
-    size, pad = COVER_SIZE, 44
-    img = gradient(size, rng.uniform(0.35, 1.2), [PLUM, MAUVE, (0xC4, 0x86, 0x8C)]).convert("RGBA")
-
-    # Soft peach glow + vinyl-style rings, positioned per track
-    fx = ImageDraw.Draw(overlay := Image.new("RGBA", (size, size)))
-    gx, gy = rng.uniform(0.55, 0.85) * size, rng.uniform(0.15, 0.4) * size
-    fx.ellipse((gx - 170, gy - 170, gx + 170, gy + 170), fill=PEACH + (95,))
-    img.alpha_composite(overlay.filter(ImageFilter.GaussianBlur(70)))
-    fx = ImageDraw.Draw(overlay := Image.new("RGBA", (size, size)))
-    for r in range(60, 260, 22):
-        fx.ellipse((gx - r, gy - r, gx + r, gy + r), outline=PEACH + (34,), width=2)
-    img.alpha_composite(overlay)
-
-    # Darken the lower third so the title always reads
-    shade = np.linspace(0, 1, size) ** 2.2 * 150
-    img.alpha_composite(Image.fromarray(
-        np.dstack([np.full((size, size, 3), DEEP, np.uint8), np.repeat(shade[:, None], size, 1).astype(np.uint8)])))
-
-    draw = ImageDraw.Draw(img)
-    draw.text((pad, pad - 6), "S O N O R I A", font=load_font(BOLD_FONTS, 18), fill=PEACH + (215,))
-
-    # Title: largest size that fits in at most three lines (smaller cap for long titles)
-    max_w = size - 2 * pad
-    for font_size in range(68, 30, -4):
-        title_font = load_font(BOLD_FONTS, font_size)
-        lines = wrap_text(draw, info["title"], title_font, max_w)
-        if len(lines) <= 2 or (len(lines) == 3 and font_size <= 56):
-            break
-    line_h = int(font_size * 1.08)
-    artist = info["artist"]
-    title_top = size - pad - (40 if artist else 0) - line_h * len(lines)
-
-    # A waveform strip unique to the track, sitting just above the title block
-    fx = ImageDraw.Draw(overlay := Image.new("RGBA", (size, size)))
-    bars, base_y = 46, min(size * 0.55, title_top - 44)
-    heights = np.abs(np.sin(np.linspace(0, rng.uniform(3, 7) * math.pi, bars))) * 0.6 + rng.uniform(0.1, 0.4, bars)
-    step = (size - 2 * pad) / bars
-    for i, h in enumerate(heights):
-        x = pad + i * step + step / 2
-        half = h * 30
-        fx.rounded_rectangle((x - step * 0.28, base_y - half, x + step * 0.28, base_y + half), radius=3, fill=PEACH + (70,))
-    img.alpha_composite(overlay)
-    draw = ImageDraw.Draw(img)
-
-    y = title_top
-    for line in lines:
-        draw.text((pad, y), line, font=title_font, fill=PEACH)
-        y += line_h
-    if artist:
-        draw.text((pad, y + 8), artist, font=load_font(REGULAR_FONTS, 26), fill=CREAM + (210,))
-
-    img.convert("RGB").save(out_path, "JPEG", quality=92, optimize=True)
-
-
 # ---------- Audio analysis ----------
 
-def analyse_audio(mp3, frames_needed):
-    """Per-video-frame loudness and spectrum bands from the song's hook region.
+def song_envelope(mp3, points):
+    """Loudness across the whole song in `points` buckets (0..1) - the shape drawn on the cover.
 
-    Returns (envelope[frames_needed], bands[frames_needed, n_bands]), both normalised to 0..1.
+    Decodes with ffmpeg directly: MoviePy's to_soundarray() returns near-silent garbage at low sample rates.
+    """
+    raw = subprocess.run(
+        [imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-i", str(mp3), "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    mono = np.frombuffer(raw, np.int16).astype(np.float32) / 32768
+    buckets = np.array_split(mono, points)
+    env = np.array([np.sqrt(np.mean(b ** 2)) if len(b) else 0.0 for b in buckets])
+    lo, hi = np.percentile(env, 5), np.percentile(env, 98)
+    return np.clip((env - lo) / (hi - lo + 1e-9), 0.05, 1)
+
+
+def analyse_audio(mp3, frames_needed):
+    """Per-video-frame loudness, spectrum bands and waveform from the song's hook region.
+
+    Returns (envelope[frames], bands[frames, n_bands], wave[frames, WAVE_POINTS]);
+    envelope and bands are 0..1, wave is -1..1.
     """
     with AudioFileClip(str(mp3)) as clip:
         seconds = frames_needed / VIDEO_FPS
@@ -193,24 +233,27 @@ def analyse_audio(mp3, frames_needed):
     mono = samples.mean(axis=1) if samples.ndim > 1 else samples
 
     hop, win = SAMPLE_RATE / VIDEO_FPS, 2048
-    edges = np.geomspace(60, 9000, RING_BARS // 4 + 1)       # log-spaced bands, mirrored around the ring later
+    edges = np.geomspace(60, 9000, RING_BARS // 4 + 1)       # log-spaced bands, mirrored by the visualizers
     freqs = np.fft.rfftfreq(win, 1 / SAMPLE_RATE)
     window = np.hanning(win)
     padded = np.pad(mono, (win, win))
     env, bands = np.zeros(frames_needed), np.zeros((frames_needed, len(edges) - 1))
+    wave = np.zeros((frames_needed, WAVE_POINTS))
     for i in range(frames_needed):
         centre = int(i * hop) + win
         chunk = padded[centre - win // 2: centre + win // 2]
         env[i] = np.sqrt(np.mean(chunk ** 2))
         spectrum = np.abs(np.fft.rfft(chunk * window))
         bands[i] = [spectrum[(freqs >= lo) & (freqs < hi)].mean() for lo, hi in zip(edges[:-1], edges[1:])]
+        wave[i] = chunk[: (win // WAVE_POINTS) * WAVE_POINTS].reshape(WAVE_POINTS, -1).mean(axis=1)
 
     def normalise(a):
         # Stretch each series between its quiet floor and loud peak so the motion is clearly visible
         lo, hi = np.percentile(a, 10, axis=0), np.percentile(a, 97, axis=0)
         return np.clip((a - lo) / (hi - lo + 1e-9), 0, 1)
 
-    return normalise(env), normalise(np.log1p(bands))
+    peak = np.percentile(np.abs(wave), 99) + 1e-9
+    return normalise(env), normalise(np.log1p(bands)), np.clip(wave / peak, -1, 1)
 
 
 def loop_crossfade(values, frames):
@@ -232,23 +275,184 @@ def smooth(values, attack=0.6, release=0.18):
     return out
 
 
+# ---------- Cover art ----------
+
+def gradient(size, stops, kind, angle, centre):
+    """A linear (at `angle` radians) or radial (from `centre`, 0..1 coords) gradient through RGB stops."""
+    y, x = np.mgrid[0:size, 0:size] / (size - 1)
+    if kind == "radial":
+        t = np.hypot(x - centre[0], y - centre[1])
+    else:
+        t = (x - 0.5) * math.cos(angle) + (y - 0.5) * math.sin(angle)
+    t = (t - t.min()) / (t.max() - t.min())
+    if kind == "radial":
+        stops = stops[::-1]  # light at the centre
+    positions = np.linspace(0, 1, len(stops))
+    channels = [np.interp(t, positions, [c[i] for c in stops]) for i in range(3)]
+    return Image.fromarray(np.stack(channels, axis=-1).astype(np.uint8))
+
+
+def draw_cover_pattern(size, pattern, env, accent, box, centre):
+    """The song's own loudness shape, drawn in one of several styles inside box = (left, top, right, bottom)."""
+    layer = Image.new("RGBA", (size, size))
+    d = ImageDraw.Draw(layer)
+    left, top, right, bottom = box
+    width, mid = right - left, (top + bottom) / 2
+    amp = (bottom - top) / 2
+    xs = np.linspace(left, right, len(env))
+
+    if pattern == "bars":
+        step = width / len(env)
+        for x, h in zip(xs, env):
+            d.rounded_rectangle((x - step * 0.3, mid - h * amp, x + step * 0.3, mid + h * amp), radius=3, fill=accent + (78,))
+    elif pattern == "wave":
+        for k, alpha in enumerate((40, 60, 90)):
+            shift = int(len(env) * 0.12 * k)
+            vals = np.roll(env, shift) * (1 - 0.18 * k)
+            pts = [(x, bottom - v * amp * 1.8) for x, v in zip(xs, vals)]
+            d.polygon([(left, bottom)] + pts + [(right, bottom)], fill=accent + (alpha,))
+    elif pattern == "rings":
+        cx, cy = centre
+        angles = np.linspace(0, 2 * math.pi, len(env), endpoint=False)
+        closed = np.append(env, env[0])
+        for k, (r0, spread) in enumerate(((70, 40), (125, 50), (185, 55))):
+            pts = [(cx + (r0 + v * spread) * math.cos(a), cy + (r0 + v * spread) * math.sin(a))
+                   for a, v in zip(np.append(angles, angles[0]), closed)]
+            d.line(pts, fill=accent + (110 - 25 * k,), width=3, joint="curve")
+    elif pattern == "dots":
+        rows, step = 9, width / len(env)
+        for x, v in zip(xs, env):
+            lit = max(1, int(round(v * rows)))
+            for r in range(rows):
+                y = bottom - r * (bottom - top) / rows
+                d.ellipse((x - step * 0.28, y - step * 0.28, x + step * 0.28, y + step * 0.28),
+                          fill=accent + (165 if r < lit else 28,))
+    elif pattern == "line":
+        pts = [(x, mid - v * amp * math.sin(i * 0.9)) for i, (x, v) in enumerate(zip(xs, env))]
+        d.line(pts, fill=accent + (200,), width=4, joint="curve")
+        glow = layer.filter(ImageFilter.GaussianBlur(8))
+        glow.alpha_composite(layer)
+        return glow
+    return layer
+
+
+def make_cover(info, style, env, out_path):
+    size, pad = COVER_SIZE, 44
+    stops, accent = style["stops"], style["accent"]
+    deep = tuple(int(c * 0.45) for c in stops[0])
+    img = gradient(size, stops, style["gradient"], style["angle"], style["glow"]).convert("RGBA")
+
+    # Soft accent glow, positioned per track
+    gx, gy = style["glow"][0] * size, style["glow"][1] * size
+    overlay = Image.new("RGBA", (size, size))
+    ImageDraw.Draw(overlay).ellipse((gx - 170, gy - 170, gx + 170, gy + 170), fill=accent + (80,))
+    img.alpha_composite(overlay.filter(ImageFilter.GaussianBlur(70)))
+
+    # Darken the lower part so the title always reads
+    shade = np.linspace(0, 1, size) ** 2.0 * 170
+    img.alpha_composite(Image.fromarray(
+        np.dstack([np.full((size, size, 3), deep, np.uint8), np.repeat(shade[:, None], size, 1).astype(np.uint8)])))
+
+    # Title: largest size where every line fits and there are at most three lines
+    draw = ImageDraw.Draw(img)
+    title = info["title"].upper() if style["uppercase"] else info["title"]
+    max_w = size - 2 * pad
+    for font_size in range(72, 28, -4):
+        title_font = load_font([style["font"], *BOLD_FONTS], font_size)
+        lines = wrap_text(draw, title, title_font, max_w)
+        fits = all(draw.textlength(line, font=title_font) <= max_w for line in lines)
+        if fits and (len(lines) <= 2 or (len(lines) == 3 and font_size <= 56)):
+            break
+    ascent, descent = title_font.getmetrics()
+    line_h = int((ascent + descent) * 0.98)
+    artist = info["artist"]
+    artist_font = load_font(REGULAR_FONTS, 26)
+    title_top = size - pad - (42 if artist else 0) - line_h * len(lines)
+
+    # The song's loudness shape: a band above the title, or rings around the glow
+    band_bottom = min(size * 0.62, title_top - 24)
+    box = (pad, max(pad + 40, band_bottom - 150), size - pad, band_bottom)
+    img.alpha_composite(draw_cover_pattern(size, style["pattern"], env, accent, box, (gx, gy)))
+
+    draw = ImageDraw.Draw(img)
+    draw.text((pad, pad - 6), "S O N O R I A", font=load_font(BOLD_FONTS, 18), fill=accent + (215,))
+
+    def x_for(text, font):
+        return (size - draw.textlength(text, font=font)) / 2 if style["layout"] == "center" else pad
+
+    y = title_top
+    for line in lines:
+        draw.text((x_for(line, title_font), y), line, font=title_font, fill=accent)
+        y += line_h
+    if artist:
+        draw.text((x_for(artist, artist_font), y + 8), artist, font=artist_font, fill=(248, 244, 233, 215))
+
+    img.convert("RGB").save(out_path, "JPEG", quality=92, optimize=True)
+
+
 # ---------- Canvas video ----------
 
-def make_video(info, mp3, cover_path, out_path):
+def make_video(style, mp3, cover_path, out_path):
     frames = VIDEO_SECONDS * VIDEO_FPS
-    env, bands = analyse_audio(mp3, frames + int(LOOP_FADE_SECONDS * VIDEO_FPS))
+    env, bands, wave = analyse_audio(mp3, frames + int(LOOP_FADE_SECONDS * VIDEO_FPS))
     env, bands = smooth(loop_crossfade(env, frames)), smooth(loop_crossfade(bands, frames))
-    ring = np.concatenate([bands, bands[:, ::-1]] * 2, axis=1)   # mirror so the ring is symmetric
+    wave = loop_crossfade(wave, frames)
+    mirrored = np.concatenate([bands, bands[:, ::-1]], axis=1)          # 36 bands, symmetric
+    ring = np.concatenate([mirrored, mirrored], axis=1)                   # 72 around the circle
 
     size, centre = COVER_SIZE, COVER_SIZE / 2
+    accent, glow_rgb = style["accent"], style["stops"][1]
+    deep = tuple(int(c * 0.35) for c in style["stops"][0])
+    kind = style["video"]
     cover = Image.open(cover_path).convert("RGB")
-    background = Image.blend(cover.filter(ImageFilter.GaussianBlur(28)), Image.new("RGB", cover.size, DEEP), 0.45)
-    art_base = 270
+    background = Image.blend(cover.filter(ImageFilter.GaussianBlur(28)), Image.new("RGB", cover.size, deep), 0.5)
+
+    art_base = {"ring": 270, "bars": 250, "wave": 260, "pulse": 240}[kind]
+    art_cy = {"bars": centre - 40}.get(kind, centre)
     mask = Image.new("L", (art_base * 2, art_base * 2))
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, art_base * 2 - 1, art_base * 2 - 1), radius=36, fill=255)
     art_big = cover.resize((art_base * 2, art_base * 2), Image.LANCZOS)
     inner_r = art_base * 0.5 * math.sqrt(2) * 1.07 + 6
     angles = np.linspace(0, 2 * math.pi, RING_BARS, endpoint=False) - math.pi / 2
+
+    def visualizer(t, i, level):
+        layer = Image.new("RGBA", (size, size))
+        d = ImageDraw.Draw(layer)
+        if kind == "ring":
+            # Spectrum ring, turning a whole number of bar-steps per loop so it is seamless
+            spin = 2 * math.pi * (t / VIDEO_SECONDS) * (8 / RING_BARS)
+            for a, h in zip(angles + spin, ring[i]):
+                length = 5 + 40 * h
+                d.line((centre + inner_r * math.cos(a), centre + inner_r * math.sin(a),
+                        centre + (inner_r + length) * math.cos(a), centre + (inner_r + length) * math.sin(a)),
+                       fill=accent + (int(150 + 105 * h),), width=5)
+        elif kind == "bars":
+            # Spectrum bars along the bottom with a faint reflection
+            n, base = mirrored.shape[1], size - 70
+            step = (size - 60) / n
+            for k, h in enumerate(mirrored[i]):
+                x = 30 + k * step + step / 2
+                top = base - (8 + 110 * h)
+                d.rounded_rectangle((x - step * 0.34, top, x + step * 0.34, base), radius=3, fill=accent + (int(160 + 95 * h),))
+                d.rounded_rectangle((x - step * 0.34, base + 4, x + step * 0.34, base + 4 + (base - top) * 0.3),
+                                    radius=3, fill=accent + (45,))
+        elif kind == "wave":
+            # Oscilloscope traces of the actual waveform, echoed behind the art
+            xs = np.linspace(0, size, WAVE_POINTS)
+            for k, (alpha, gain) in enumerate(((230, 150), (110, 110), (60, 80))):
+                w = wave[(i - 2 * k) % frames]
+                d.line([(x, centre + v * gain) for x, v in zip(xs, w)], fill=accent + (alpha,), width=4 - k, joint="curve")
+        elif kind == "pulse":
+            # Rings expanding from the art; 8 per loop so the last frame matches the first
+            period = VIDEO_SECONDS / 8
+            for k in range(4):
+                phase = ((t / period) + k / 4) % 1.0
+                r = inner_r * 0.85 + phase * (size * 0.5 - inner_r * 0.85 + 30)
+                alpha = int((1 - phase) * (70 + 150 * level))
+                d.ellipse((centre - r, centre - r, centre + r, centre + r), outline=accent + (alpha,), width=4)
+        blurred = layer.filter(ImageFilter.GaussianBlur(3))
+        blurred.alpha_composite(layer)
+        return blurred
 
     def frame(t):
         i = min(int(round(t * VIDEO_FPS)), frames - 1)
@@ -257,31 +461,20 @@ def make_video(info, mp3, cover_path, out_path):
 
         # Glow behind the art, breathing with loudness
         glow = Image.new("RGBA", img.size)
-        g = 150 + 50 * level
-        ImageDraw.Draw(glow).ellipse((centre - g * 1.4, centre - g * 1.4, centre + g * 1.4, centre + g * 1.4),
-                                     fill=MAUVE + (int(90 + 110 * level),))
+        g = (150 + 50 * level) * 1.4
+        ImageDraw.Draw(glow).ellipse((centre - g, art_cy - g, centre + g, art_cy + g),
+                                     fill=glow_rgb + (int(90 + 110 * level),))
         img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(40)))
-
-        # Spectrum ring, slowly turning a whole number of bar-steps so the loop is seamless
-        spin = 2 * math.pi * (t / VIDEO_SECONDS) * (8 / RING_BARS)
-        bars = Image.new("RGBA", img.size)
-        bd = ImageDraw.Draw(bars)
-        for a, h in zip(angles + spin, ring[i]):
-            length = 5 + 40 * h
-            x0, y0 = centre + inner_r * math.cos(a), centre + inner_r * math.sin(a)
-            x1, y1 = centre + (inner_r + length) * math.cos(a), centre + (inner_r + length) * math.sin(a)
-            bd.line((x0, y0, x1, y1), fill=PEACH + (int(150 + 105 * h),), width=5)
-        img.alpha_composite(bars.filter(ImageFilter.GaussianBlur(3)))
-        img.alpha_composite(bars)
+        img.alpha_composite(visualizer(t, i, level))
 
         # Cover art, scaling with the beat
         side = int(art_base * (1.0 + 0.07 * level))
         art = art_big.resize((side, side), Image.BILINEAR)
+        ox, oy = int(centre - side / 2), int(art_cy - side / 2)
         shadow = Image.new("RGBA", img.size)
-        o = int(centre - side / 2)
-        ImageDraw.Draw(shadow).rounded_rectangle((o, o + 12, o + side, o + side + 12), radius=24, fill=(0, 0, 0, 150))
+        ImageDraw.Draw(shadow).rounded_rectangle((ox, oy + 12, ox + side, oy + side + 12), radius=24, fill=(0, 0, 0, 150))
         img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(18)))
-        img.paste(art, (o, o), mask.resize((side, side), Image.BILINEAR))
+        img.paste(art, (ox, oy), mask.resize((side, side), Image.BILINEAR))
         return np.asarray(img.convert("RGB"))
 
     VideoClip(frame, duration=VIDEO_SECONDS).write_videofile(
@@ -375,6 +568,7 @@ def seed_database(entries):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--force", action="store_true", help="re-render covers and videos that already exist")
+    parser.add_argument("--seed", type=int, default=0, help="choose a different set of looks (default 0)")
     args = parser.parse_args()
 
     COVER_DIR.mkdir(parents=True, exist_ok=True)
@@ -383,9 +577,10 @@ def main():
     if not mp3s:
         raise SystemExit(f"No MP3 files found in {AUDIO_DIR}")
 
+    infos = [track_info(mp3) for mp3 in mp3s]
+    styles = assign_styles(infos, args.seed)
     entries = []
-    for n, mp3 in enumerate(mp3s, 1):
-        info = track_info(mp3)
+    for n, (mp3, info, style) in enumerate(zip(mp3s, infos, styles), 1):
         cover_path = COVER_DIR / f"{info['slug']}.jpg"
         video_path = VIDEO_DIR / f"{info['slug']}.mp4"
         with AudioFileClip(str(mp3)) as clip:
@@ -393,13 +588,14 @@ def main():
 
         status = []
         if args.force or not cover_path.exists():
-            make_cover(info, cover_path)
+            make_cover(info, style, song_envelope(mp3, 56), cover_path)
             status.append("cover")
         if args.force or not video_path.exists():
-            make_video(info, mp3, cover_path, video_path)
+            make_video(style, mp3, cover_path, video_path)
             status.append("video")
-        print(f"[{n:2}/{len(mp3s)}] {info['title']:<24} {duration / 60:4.1f} min  "
-              f"{info['section']:<8} {'rendered ' + ' + '.join(status) if status else 'up to date'}")
+        look = f"{style['palette']} / {Path(style['font']).stem} / {style['pattern']} / {style['video']}"
+        print(f"[{n:2}/{len(mp3s)}] {info['title']:<24} {duration / 60:4.1f} min  {info['section']:<8} "
+              f"{look:<52} {'rendered ' + ' + '.join(status) if status else 'up to date'}")
 
         entries.append({
             **info,

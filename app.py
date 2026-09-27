@@ -100,9 +100,12 @@ LOCAL_SECTIONS = {
 
 @app.route("/api/home_sections")
 def api_home_sections():
-    """Locally hosted tracks (full MP3 + cover + Canvas loop), grouped by home-page section."""
+    """Locally hosted tracks (full MP3 + cover + Canvas loop), grouped by home-page section.
+
+    Each request returns every section in a fresh random order, so the home feed reshuffles on refresh.
+    """
     tracks = (Track.query.filter(Track.approved.is_(True), Track.section.in_(LOCAL_SECTIONS))
-              .order_by(Track.play_count.desc(), Track.id).all())
+              .order_by(db.func.random()).all())
     grouped = {key: [] for key in LOCAL_SECTIONS}
     for track in tracks:
         grouped[track.section].append(track.to_dict())
@@ -266,43 +269,79 @@ def api_user_badge():
 
 LRCLIB_URL = "https://lrclib.net/api"
 LRC_TIMESTAMP = re_module.compile(r"^\s*(\[\d+:\d+(?:\.\d+)?\])+\s*")
+LRC_TAG = re_module.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
+SYNC_DURATION_TOLERANCE = 4  # seconds; a longer or shorter recording would put every line at the wrong time
 
 
-def lyrics_payload(record):
-    """Turns an LRCLIB record into {lines, instrumental}, preferring plain text over synced LRC."""
+def parse_synced_lyrics(lrc):
+    """LRC text -> [{time (s), text}] sorted by time. A line may carry several timestamps; empty text marks a break."""
+    synced = []
+    for raw in lrc.splitlines():
+        stamps = LRC_TAG.findall(raw)
+        if not stamps:
+            continue
+        text = LRC_TAG.sub("", raw).strip()
+        for minutes, seconds in stamps:
+            synced.append({"time": round(int(minutes) * 60 + float(seconds), 2), "text": text})
+    return sorted(synced, key=lambda line: line["time"])
+
+
+def lyrics_payload(record, duration=None):
+    """Turns an LRCLIB record into {lines, synced, instrumental}.
+
+    lines is plain text (for display without timing); synced is [{time, text}] when LRCLIB has
+    timestamps and, if the caller gave a duration, the record is the same length recording.
+    """
     text = record.get("plainLyrics") or record.get("syncedLyrics") or ""
     lines = [LRC_TIMESTAMP.sub("", line).rstrip() for line in text.splitlines()]
-    return {"lines": lines, "instrumental": bool(record.get("instrumental"))}
+    synced = parse_synced_lyrics(record.get("syncedLyrics") or "") or None
+    record_duration = record.get("duration")
+    if synced and duration and record_duration and abs(record_duration - duration) > SYNC_DURATION_TOLERANCE:
+        synced = None
+    return {"lines": lines, "synced": synced, "instrumental": bool(record.get("instrumental"))}
+
+
+def best_lyrics_match(results, duration=None):
+    """Prefers records with synced lyrics, then the one whose length is closest to the recording."""
+    def score(record):
+        has_synced = bool(record.get("syncedLyrics"))
+        gap = abs((record.get("duration") or 0) - duration) if duration else 0
+        return (not (has_synced and gap <= SYNC_DURATION_TOLERANCE), gap)
+    return min(results, key=score)
 
 
 @app.route("/api/lyrics")
 def api_lyrics():
-    """Looks up lyrics on LRCLIB by artist + title (+ optional album / duration in seconds)."""
+    """Looks up lyrics on LRCLIB by artist + title (+ optional album / duration in seconds).
+
+    Returns {lines, synced, instrumental, error}; synced is null when no timed lyrics match the recording.
+    """
     artist = request.args.get("artist", "").strip()
     title = request.args.get("title", "").strip()
     if not artist or not title:
-        return jsonify({"lines": [], "error": "Missing 'artist' or 'title' parameter"}), 400
+        return jsonify({"lines": [], "synced": None, "error": "Missing 'artist' or 'title' parameter"}), 400
 
     params = {"artist_name": artist, "track_name": title}
     headers = {"User-Agent": "Sonoria/1.0 (music streaming demo)"}
+    album, duration_arg = request.args.get("album", "").strip(), request.args.get("duration", "")
+    duration = int(duration_arg) if duration_arg.isdigit() else None
     try:
         # Exact match first (needs album + duration), then fall back to fuzzy search.
-        album, duration = request.args.get("album", "").strip(), request.args.get("duration", "")
-        if album and duration.isdigit():
+        if album and duration:
             resp = requests.get(f"{LRCLIB_URL}/get", headers=headers, timeout=5,
                                 params={**params, "album_name": album, "duration": duration})
             if resp.ok:
-                return jsonify({**lyrics_payload(resp.json()), "error": None})
+                return jsonify({**lyrics_payload(resp.json(), duration), "error": None})
 
         resp = requests.get(f"{LRCLIB_URL}/search", params=params, headers=headers, timeout=5)
         resp.raise_for_status()
         results = [r for r in resp.json() if r.get("plainLyrics") or r.get("syncedLyrics") or r.get("instrumental")]
     except (requests.RequestException, ValueError):
-        return jsonify({"lines": [], "error": "Could not reach the lyrics service right now."}), 503
+        return jsonify({"lines": [], "synced": None, "error": "Could not reach the lyrics service right now."}), 503
 
     if not results:
-        return jsonify({"lines": [], "error": "No lyrics found for this track."}), 404
-    return jsonify({**lyrics_payload(results[0]), "error": None})
+        return jsonify({"lines": [], "synced": None, "error": "No lyrics found for this track."}), 404
+    return jsonify({**lyrics_payload(best_lyrics_match(results, duration), duration), "error": None})
 
 
 @login_manager.user_loader

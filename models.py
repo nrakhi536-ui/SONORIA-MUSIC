@@ -2,8 +2,14 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from urllib.parse import quote
+from datetime import datetime, timezone
 
 db = SQLAlchemy()
+
+
+def utc_now():
+    """Naive UTC with microseconds; SQLite's CURRENT_TIMESTAMP only has whole seconds, too coarse for ordering."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def media_url(path):
@@ -75,7 +81,7 @@ playlist_tracks = db.Table(
     "playlist_tracks",
     db.Column("playlist_id", db.Integer, db.ForeignKey("playlist.id", ondelete="CASCADE"), primary_key=True),
     db.Column("track_id", db.Integer, db.ForeignKey("track.id", ondelete="CASCADE"), primary_key=True),
-    db.Column("added_at", db.DateTime, server_default=db.func.now()),
+    db.Column("added_at", db.DateTime, default=utc_now, server_default=db.func.now()),
 )
 
 
@@ -107,7 +113,7 @@ class UserPlayCount(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     genre = db.Column(db.String(50), nullable=False)
     play_count = db.Column(db.Integer, nullable=False, default=0)
-    last_played_at = db.Column(db.DateTime, server_default=db.func.now())  # breaks ties toward the recent genre
+    last_played_at = db.Column(db.DateTime, default=utc_now, server_default=db.func.now())  # breaks ties toward the recent genre
 
     __table_args__ = (db.UniqueConstraint("user_id", "genre", name="unique_user_genre"),)
 
