@@ -44,9 +44,9 @@ class Track(db.Model):
     genre = db.Column(db.String(50), default="Other")
     # Local catalogue media (see generate_media.py); URLs are site-relative, e.g. /static/media/...
     album = db.Column(db.String(300))
-    cover = db.Column(db.String(500))
+    cover_art = db.Column(db.String(500))       # cover image path
     stream_url = db.Column(db.String(500), index=True)
-    video_url = db.Column(db.String(500))
+    canvas_video = db.Column(db.String(500))    # looping canvas MP4 (~20 s); NULL -> animated cover fallback
     duration_ms = db.Column(db.Integer)
     section = db.Column(db.String(20), index=True)  # "trending" | "viral" | "artist"; NULL for plain uploads
 
@@ -64,9 +64,9 @@ class Track(db.Model):
             "artist": self.artist.username,
             "artist_id": self.artist_id,
             "album": self.album,
-            "cover": media_url(self.cover),
+            "cover": media_url(self.cover_art),
             "stream_url": media_url(self.stream_url),
-            "video_url": media_url(self.video_url),
+            "video_url": media_url(self.canvas_video),
             "duration": self.duration_ms,
             "genre": self.genre,
             "play_count": self.play_count or 0,
@@ -121,12 +121,30 @@ class UserPlayCount(db.Model):
 
 
 # Columns added to Track after the first release; SQLite needs them ALTERed onto existing databases.
+# Columns that were renamed in the model: table -> {old name: new name}. Renamed in place so data is kept.
+RENAMED_COLUMNS = {"track": {"cover": "cover_art", "video_url": "canvas_video"}}
+
+
+def rename_columns():
+    inspector = db.inspect(db.engine)
+    tables = set(inspector.get_table_names())
+    for table, renames in RENAMED_COLUMNS.items():
+        if table not in tables:
+            continue
+        have = {col["name"] for col in inspector.get_columns(table)}
+        with db.engine.begin() as conn:
+            for old, new in renames.items():
+                if old in have and new not in have:
+                    conn.execute(db.text(f'ALTER TABLE "{table}" RENAME COLUMN "{old}" TO "{new}"'))
+
+
 def upgrade_schema():
     """Adds columns that models gained after their table was created (db.create_all() never alters tables).
 
     Only nullable columns can be added this way; that covers every column added so far
-    (Track's media fields, and external_id on Like / PlayHistory).
+    (Track's media fields, and external_id on Like / PlayHistory). Renamed columns are handled first.
     """
+    rename_columns()
     inspector = db.inspect(db.engine)
     existing_tables = set(inspector.get_table_names())
     statements = []

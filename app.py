@@ -4,11 +4,14 @@ from flask_cors import CORS
 from models import db, User, Track, PlayHistory, Like, Playlist, ExternalTrack, UserPlayCount, playlist_tracks, upgrade_schema
 from badges import get_user_genre_badge, record_genre_play, GENRE_BADGES
 from functools import wraps
+from recommend import recommend, dedupe_by_title, weighted_sample, rank_weight
 from concurrent.futures import ThreadPoolExecutor
 import requests
 import feedparser
 import os
 import uuid
+import time
+import struct
 from collections import Counter
 from pathlib import Path
 import re as re_module
@@ -42,7 +45,10 @@ def inject_role_label():
 # ---------- iTunes SEARCH API ----------
 
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
-HOME_SECTION_TERMS = ["Chill", "Top Hits", "Synthwave"]
+# Home rows backed by iTunes: section name -> search term. "Recommended for You" is personal (/api/recommendations).
+HOME_SECTION_TERMS = {"Chill": "Chill", "Top Charts": "Top Hits"}
+HOME_ROW_SIZE = {"Chill": 6, "Top Charts": 10}
+ITUNES_CACHE_SECONDS = 600
 
 
 def normalize_itunes_track(item):
@@ -87,19 +93,72 @@ def api_search():
         return jsonify({"results": [], "error": "Could not reach the music search service right now."}), 503
 
 
+_itunes_cache = {}
+
+
+def cached_itunes(term, limit=25):
+    """query_itunes with a 10-minute cache (home rows, recommendations and autoplay reuse the same searches).
+
+    Returns [] instead of raising, so one slow search never breaks a whole response.
+    """
+    key = (term.lower(), limit)
+    hit = _itunes_cache.get(key)
+    if hit and time.monotonic() - hit[0] < ITUNES_CACHE_SECONDS:
+        return hit[1]
+    try:
+        results = query_itunes(term, limit=limit)
+    except requests.RequestException:
+        return hit[1] if hit else []   # stale beats nothing
+    _itunes_cache[key] = (time.monotonic(), results)
+    return results
+
+
 @app.route("/api/songs")
 def api_songs():
-    """Fallback route to populate home sections with a few popular-term searches."""
-    def fetch(term):
-        try:
-            return query_itunes(term, limit=10)
-        except requests.RequestException:
-            return []
+    """iTunes-backed home rows, each without repeated titles (within or across rows) and freshly shuffled.
 
-    # Run the section searches concurrently so the home page waits on one round-trip, not three.
-    with ThreadPoolExecutor(max_workers=len(HOME_SECTION_TERMS)) as pool:
-        sections = dict(zip(HOME_SECTION_TERMS, pool.map(fetch, HOME_SECTION_TERMS)))
+    Each row samples from the top 25 results, favouring higher-ranked songs, so it stays relevant but differs
+    on every load.
+    """
+    names = list(HOME_SECTION_TERMS)
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        results = dict(zip(names, pool.map(lambda n: cached_itunes(HOME_SECTION_TERMS[n]), names)))
+    seen, sections = set(), {}
+    for name in names:
+        items = [t for t in results[name] if t.get("stream_url")]
+        shuffled = weighted_sample(items, [rank_weight(i) for i in range(len(items))], len(items))
+        sections[name] = dedupe_by_title(shuffled, seen)[:HOME_ROW_SIZE[name]]
     return jsonify({"sections": sections})
+
+
+@app.route("/api/recommendations")
+def api_recommendations():
+    """Personal picks for the home row and for autoplay.
+
+    Query: limit (<=30), recent (comma genres, newest first), seed (id of the playing track), seed_genre,
+    seed_title, exclude (comma ids), exclude_title (repeatable). Signed-in listeners also get their stored
+    plays and likes counted. Returns {tracks, genres, reason}.
+    """
+    args = request.args
+    limit = max(1, min(30, args.get("limit", default=12, type=int)))
+    recent = [g.strip() for g in args.get("recent", "").split(",") if g.strip()]
+    exclude = [i.strip() for i in args.get("exclude", "").split(",") if i.strip()]
+    seed = None
+    if args.get("seed"):
+        seed_track = playable_track(args["seed"]) if args["seed"].startswith("local-") else None
+        seed = seed_track.to_dict() if seed_track else {
+            "id": args["seed"], "genre": args.get("seed_genre"), "title": args.get("seed_title")}
+    tracks, genres = recommend(
+        user_id=current_user.id if current_user.is_authenticated else None,
+        recent_genres=recent, seed=seed, exclude_ids=exclude, exclude_titles=args.getlist("exclude_title"),
+        limit=limit, itunes_search=cached_itunes)
+    if seed:
+        reason = f"More like “{seed.get('title') or 'this song'}”"
+    elif genres:
+        reason = "Because you listen to " + " & ".join(genres[:2])
+    else:
+        reason = "Popular on Sonoria right now"
+    return jsonify({"tracks": tracks, "genres": genres, "reason": reason})
 
 
 # Local catalogue sections (Track.section) and the headings the SPA shows for them, in page order.
@@ -746,10 +805,49 @@ def search_podcasts():
 # ---------- ARTIST ----------
 
 UPLOAD_FOLDER = os.path.join("static", "uploads")
+COVER_FOLDER = os.path.join(UPLOAD_FOLDER, "covers")    # artists' cover art
+CANVAS_FOLDER = os.path.join(UPLOAD_FOLDER, "canvas")   # artists' canvas videos
 ALLOWED_EXTENSIONS = {"mp3", "wav", "m4a"}
 UPLOAD_GENRES = list(GENRE_BADGES) + ["Other"]
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+MB = 1024 * 1024
+MAX_AUDIO_BYTES, MAX_COVER_BYTES, MAX_CANVAS_BYTES = 20 * MB, 5 * MB, 15 * MB
+MAX_CANVAS_SECONDS = 22  # canvas loops are ~20 s; a little slack for encoders that round up
+for folder in (UPLOAD_FOLDER, COVER_FOLDER, CANVAS_FOLDER):
+    os.makedirs(folder, exist_ok=True)
+app.config["MAX_CONTENT_LENGTH"] = MAX_AUDIO_BYTES + MAX_COVER_BYTES + MAX_CANVAS_BYTES + MB
+
+
+def file_size(file):
+    file.stream.seek(0, os.SEEK_END)
+    size = file.stream.tell()
+    file.stream.seek(0)
+    return size
+
+
+def image_extension(head):
+    """jpg/png/webp from the file's magic bytes, or None (the extension a browser sends can lie)."""
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def mp4_duration(data):
+    """Seconds from an MP4's movie header (mvhd box), or None if it isn't a readable MP4."""
+    if data[4:8] != b"ftyp":
+        return None
+    at = data.find(b"mvhd")
+    if at < 0 or at + 32 > len(data):
+        return None
+    version = data[at + 4]
+    if version == 1:
+        timescale, duration = struct.unpack(">IQ", data[at + 24:at + 36])
+    else:
+        timescale, duration = struct.unpack(">II", data[at + 16:at + 24])
+    return duration / timescale if timescale else None
 
 
 def allowed_file(filename):
@@ -824,15 +922,46 @@ def upload_track():
         return fail("Please choose an audio file.")
     if not allowed_file(file.filename):
         return fail("Only mp3, wav, or m4a files are allowed.")
+    if file_size(file) > MAX_AUDIO_BYTES:
+        return fail("The audio file is over the 20 MB limit.")
 
-    # Unique name so two artists uploading "song.mp3" never overwrite each other
+    # Optional cover art and canvas video, checked by content rather than by name
+    cover, cover_ext = request.files.get("cover_art"), None
+    if cover and cover.filename:
+        if file_size(cover) > MAX_COVER_BYTES:
+            return fail("Cover art must be 5 MB or smaller.")
+        cover_ext = image_extension(cover.stream.read(16))
+        cover.stream.seek(0)
+        if not cover_ext:
+            return fail("Cover art must be a JPG, PNG or WebP image.")
+    canvas, canvas_data = request.files.get("canvas_video"), None
+    if canvas and canvas.filename:
+        if file_size(canvas) > MAX_CANVAS_BYTES:
+            return fail("The canvas video must be 15 MB or smaller.")
+        canvas_data = canvas.stream.read()
+        seconds = mp4_duration(canvas_data)
+        if seconds is None:
+            return fail("The canvas video must be an MP4 file.")
+        if seconds > MAX_CANVAS_SECONDS:
+            return fail(f"The canvas video is {seconds:.0f} s long; keep it to about 20 seconds.")
+
+    # Unique names so two artists uploading "song.mp3" never overwrite each other
+    token = uuid.uuid4().hex[:10]
     extension = file.filename.rsplit(".", 1)[1].lower()
     safe = secure_filename(file.filename) or f"track.{extension}"
-    filename = f"{uuid.uuid4().hex[:10]}_{safe}"
+    filename = f"{token}_{safe}"
     file.save(os.path.join(UPLOAD_FOLDER, filename))
+    cover_path = canvas_path = None
+    if cover_ext:
+        cover.save(os.path.join(COVER_FOLDER, f"{token}.{cover_ext}"))
+        cover_path = f"/static/uploads/covers/{token}.{cover_ext}"
+    if canvas_data:
+        Path(CANVAS_FOLDER, f"{token}.mp4").write_bytes(canvas_data)
+        canvas_path = f"/static/uploads/canvas/{token}.mp4"
 
     track = Track(title=title, artist_id=current_user.id, audio_file=filename, genre=genre,
-                  approved=True, play_count=0, stream_url=f"/static/uploads/{filename}")
+                  approved=True, play_count=0, stream_url=f"/static/uploads/{filename}",
+                  cover_art=cover_path, canvas_video=canvas_path)
     db.session.add(track)
     db.session.commit()
     if wants_json():
@@ -884,11 +1013,15 @@ def delete_track(track_id):
     PlayHistory.query.filter_by(track_id=track.id).delete()
     audio_file = track.audio_file or ""
     in_uploads = bool(audio_file) and track.stream_url == f"/static/uploads/{audio_file}"
+    extras = [path for path in (track.cover_art, track.canvas_video)
+              if path and path.startswith(("/static/uploads/covers/", "/static/uploads/canvas/"))]
     db.session.delete(track)
     db.session.commit()
     upload = Path(UPLOAD_FOLDER) / audio_file
     if in_uploads and upload.is_file() and not Track.query.filter_by(audio_file=audio_file).count():
         upload.unlink()
+    for path in extras:  # the artist's own cover / canvas files belong to this track alone
+        Path(path.lstrip("/")).unlink(missing_ok=True)
     if wants_json():
         return jsonify({"deleted": track_id})
     return redirect(url_for("artist_dashboard", tab="tracks"))

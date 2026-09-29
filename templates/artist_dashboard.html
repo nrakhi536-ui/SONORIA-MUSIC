@@ -96,6 +96,20 @@
         <span class="drop-title" id="drop-title">Drop an audio file here, or click to choose</span>
         <span class="drop-hint">MP3, WAV or M4A · up to 20 MB</span>
       </label>
+      <div class="media-row">
+        <label class="dropzone small" id="cover-drop">
+          <input type="file" name="cover_art" id="upload-cover" accept="image/jpeg,image/png,image/webp">
+          <span class="media-preview cover-preview" id="cover-preview" aria-hidden="true"></span>
+          <span class="drop-title" id="cover-title">Cover art <em>(optional)</em></span>
+          <span class="drop-hint">JPG, PNG or WebP · up to 5 MB · square looks best</span>
+        </label>
+        <label class="dropzone small" id="canvas-drop">
+          <input type="file" name="canvas_video" id="upload-canvas" accept="video/mp4,.mp4">
+          <video class="media-preview" id="canvas-preview" muted loop playsinline hidden></video>
+          <span class="drop-title" id="canvas-title">Canvas video <em>(optional)</em></span>
+          <span class="drop-hint">MP4 · about 20 s, loops behind your song · up to 15 MB</span>
+        </label>
+      </div>
       <div class="form-row">
         <label class="field">
           <span>Title</span>

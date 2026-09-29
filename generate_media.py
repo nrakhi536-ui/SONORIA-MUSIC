@@ -1,19 +1,23 @@
-"""Builds cover art, 10-second Canvas loops, and database rows for every MP3 in static/media/audio/.
+"""Builds cover art, 20-second Canvas loops, and database rows for every MP3 in static/media/audio/.
 
 For each track:
-  * static/media/covers/<slug>.jpg - 600x600 cover with the track name, in the track's own palette and font,
-                                     patterned with the song's actual loudness shape
-  * static/media/video/<slug>.mp4  - 10 s seamless loop: the cover pulsing to the song's own loudness,
-                                     with one of four audio-reactive visualizers (ring, bars, wave, pulse)
-  * a Track row (section trending / viral / artist) owned by an artist User
+  * static/media/covers/<slug>.(jpg|jpeg|png|webp) - your own cover if one exists, otherwise a generated
+                                     600x600 cover in the track's own palette and font
+  * static/media/video/<slug>.mp4  - your own canvas video if one exists, otherwise a generated 20 s seamless
+                                     loop: the cover pulsing to the song's loudness with one of four visualizers
+  * a Track row (section trending / viral / artist, cover_art, canvas_video) owned by an artist User
+
+Files this script generates are listed in static/media/.generated.json. It never overwrites anything else,
+so covers and videos you drop in yourself are always kept, even with --force.
 
 Usage:  python generate_media.py [--force] [--seed N]
-        --force  re-render covers and videos that already exist
+        --force  re-render the covers and videos this script generated (yours are left alone)
         --seed   pick a different set of looks (default 0; the same seed always gives the same art)
 """
 import argparse
 import colorsys
 import hashlib
+import json
 import math
 import re
 import os
@@ -62,7 +66,7 @@ MEDIA = ROOT / "static" / "media"
 AUDIO_DIR, COVER_DIR, VIDEO_DIR = MEDIA / "audio", MEDIA / "covers", MEDIA / "video"
 
 COVER_SIZE = 600
-VIDEO_SECONDS, VIDEO_FPS = 10, 24
+VIDEO_SECONDS, VIDEO_FPS = 20, 24
 LOOP_FADE_SECONDS = 1.0   # envelope crossfade that makes the last frame flow into the first
 SAMPLE_RATE = 22050
 RING_BARS = 72
@@ -443,8 +447,8 @@ def make_video(style, mp3, cover_path, out_path):
                 w = wave[(i - 2 * k) % frames]
                 d.line([(x, centre + v * gain) for x, v in zip(xs, w)], fill=accent + (alpha,), width=4 - k, joint="curve")
         elif kind == "pulse":
-            # Rings expanding from the art; 8 per loop so the last frame matches the first
-            period = VIDEO_SECONDS / 8
+            # Rings expanding from the art; a whole number per loop so the last frame matches the first
+            period = VIDEO_SECONDS / round(VIDEO_SECONDS / 1.25)
             for k in range(4):
                 phase = ((t / period) + k / 4) % 1.0
                 r = inner_r * 0.85 + phase * (size * 0.5 - inner_r * 0.85 + 30)
@@ -517,7 +521,7 @@ def verify_database_paths():
         tracks = Track.query.filter(Track.section.isnot(None)).order_by(Track.id).all()
         problems = [f"  {t.title}: {field} {path!r}"
                     for t in tracks
-                    for field, path in (("audio", t.stream_url), ("cover", t.cover), ("video", t.video_url))
+                    for field, path in (("audio", t.stream_url), ("cover", t.cover_art), ("video", t.canvas_video))
                     if not path or not exact_case_exists(path)]
     if problems:
         raise SystemExit("Database paths that don't match a file on disk exactly:\n" + "\n".join(problems))
@@ -555,14 +559,44 @@ def seed_database(entries):
             track.genre = info["genre"]
             track.section = info["section"]
             track.stream_url = info["stream_url"]
-            track.cover = info["cover"]
-            track.video_url = info["video_url"]
+            track.cover_art = info["cover"]
+            track.canvas_video = info["video_url"]
             track.audio_file = info["file"]
             track.duration_ms = info["duration_ms"]
             track.approved = True
         db.session.commit()
         total = Track.query.filter(Track.section.isnot(None)).count()
     print(f"Database: {created} created, {updated} updated, {total} local catalogue tracks in total.")
+
+
+COVER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+MANIFEST = MEDIA / ".generated.json"
+
+
+def file_hash(path):
+    return hashlib.sha1(path.read_bytes()).hexdigest()
+
+
+def load_manifest():
+    try:
+        return json.loads(MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def existing_cover(slug):
+    """The track's cover in any supported format, preferring one you supplied."""
+    for ext in COVER_EXTENSIONS:
+        path = COVER_DIR / f"{slug}{ext}"
+        if path.exists():
+            return path
+    return None
+
+
+def is_generated(path, manifest):
+    """True if this script made the file and nobody has replaced it since."""
+    key = path.relative_to(MEDIA).as_posix()
+    return path.exists() and manifest.get(key) == file_hash(path)
 
 
 def main():
@@ -579,23 +613,33 @@ def main():
 
     infos = [track_info(mp3) for mp3 in mp3s]
     styles = assign_styles(infos, args.seed)
+    manifest = load_manifest()
     entries = []
     for n, (mp3, info, style) in enumerate(zip(mp3s, infos, styles), 1):
-        cover_path = COVER_DIR / f"{info['slug']}.jpg"
-        video_path = VIDEO_DIR / f"{info['slug']}.mp4"
         with AudioFileClip(str(mp3)) as clip:
             duration = clip.duration
 
         status = []
-        if args.force or not cover_path.exists():
+        cover_path = existing_cover(info["slug"])
+        if cover_path is None or (args.force and is_generated(cover_path, manifest)):
+            cover_path = cover_path or COVER_DIR / f"{info['slug']}.jpg"
             make_cover(info, style, song_envelope(mp3, 56), cover_path)
-            status.append("cover")
-        if args.force or not video_path.exists():
+            manifest[cover_path.relative_to(MEDIA).as_posix()] = file_hash(cover_path)
+            status.append("rendered cover")
+        elif not is_generated(cover_path, manifest):
+            status.append("your cover")
+
+        video_path = VIDEO_DIR / f"{info['slug']}.mp4"
+        if not video_path.exists() or (args.force and is_generated(video_path, manifest)):
             make_video(style, mp3, cover_path, video_path)
-            status.append("video")
-        look = f"{style['palette']} / {Path(style['font']).stem} / {style['pattern']} / {style['video']}"
+            manifest[video_path.relative_to(MEDIA).as_posix()] = file_hash(video_path)
+            status.append("rendered video")
+        elif not is_generated(video_path, manifest):
+            status.append("your video")
+        MANIFEST.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
         print(f"[{n:2}/{len(mp3s)}] {info['title']:<24} {duration / 60:4.1f} min  {info['section']:<8} "
-              f"{look:<52} {'rendered ' + ' + '.join(status) if status else 'up to date'}")
+              f"{', '.join(status) or 'up to date'}")
 
         entries.append({
             **info,

@@ -8,12 +8,18 @@ It streams 30-second song previews from the iTunes Search API and shows lyrics f
   with seek, volume, shuffle, repeat, a queue panel, a lyrics panel and a video/visualizer mode.
   Every track has a **⋯** menu (also on right-click and in the player) with **Add to queue**: queued songs
   play after the current one, before the rest of the list, without interrupting playback.
+  When the list and your queue run out, **Autoplay** keeps going with songs like the last one (toggle in the
+  queue panel). **Recommended for You** is personal: it's built from your recent plays, long-term genres and
+  likes, and re-weights itself as you listen. Top Charts never repeats a title and reshuffles on each load.
+- **Canvas**: in Video mode each song's looping ~20 s canvas video fills the stage. Songs without one (or
+  whose video fails) get an animated cover instead.
 - **Likes**: guests' likes stay in the browser (`localStorage["guest_liked_songs"]`); signed-in users and
   artists get their own likes on the server. Guest likes are never merged into an account.
 - **JSON API**: iTunes search, home-page sections, lyrics, likes, playlists and badges (see below).
 - **Accounts and roles**: signup, login and logout for users, artists and admins.
 - **Artist tools**: a dashboard with live stream counts, a performance chart, track management and
-  drag-and-drop uploads that **publish immediately** (no approval step); a public artist page.
+  drag-and-drop uploads that **publish immediately** (no approval step), with optional cover art
+  (JPG/PNG/WebP, 5 MB) and a canvas video (MP4, about 20 s, 15 MB); a public artist page.
 - **Admin tools**: dashboard, and review of any older unapproved uploads.
 
 ## Requirements
@@ -51,7 +57,8 @@ You can open a view directly with a link like `/#library` or `/#explore`.
 | Endpoint | Returns |
 | --- | --- |
 | `GET /api/search?q=<term>` | `{results: [track], error}`: up to 25 iTunes songs |
-| `GET /api/songs` | `{sections: {"Chill": [...], "Top Hits": [...], "Synthwave": [...]}}` for the home page |
+| `GET /api/songs` | `{sections: {"Chill": [...], "Top Charts": [...]}}` for the home page: no title appears twice, and each load samples the top results in a new order |
+| `GET /api/recommendations` | `{tracks, genres, reason}`. Query: `limit`, `recent` (comma genres, newest first), `seed` (+ `seed_genre`, `seed_title`) for autoplay, `exclude` (comma ids), `exclude_title` (repeatable). Signed-in listeners' stored plays and likes also count |
 | `GET /api/lyrics?artist=<a>&title=<t>[&album=<al>&duration=<sec>]` or `?track_id=local-3` | `{lines: [str], synced: [{time, text}] \| null, instrumental, source, error}`; 404 if no lyrics are found. Catalogue tracks use their `.lrc` file first (`source: "local"`); otherwise LRCLIB `/api/get`, then a search. `synced` is only set when the recording is within 4 s of `duration` |
 | `GET /api/likes` | `{tracks: [track]}`: the signed-in account's liked songs, newest first |
 | `POST /api/likes` | Body `{track_id}` (`"local-3"` or an iTunes id; iTunes details are looked up server-side) |
@@ -69,8 +76,9 @@ works for guests: it bumps catalogue play counts and returns `{recorded: false}`
 tracks (`local-*` ids) can go in playlists. Listener badges come from the user's most played genre, as mapped in
 [badges.py](badges.py).
 
-Each `track` has this shape: `{id, title, artist, album, cover (600×600), stream_url (30s preview), duration (ms)}`.
-Local catalogue tracks also have `video_url` (10 s Canvas loop), `section` and `local: true`, their `id` looks like
+Tracks store their media in `cover_art` and `canvas_video`; the API still returns them as `cover` and
+`video_url`. Each `track` has this shape: `{id, title, artist, album, cover (600×600), stream_url (30s preview), duration (ms)}`.
+Local catalogue tracks also have `video_url` (~20 s Canvas loop), `section` and `local: true`, their `id` looks like
 `"local-3"`, and `stream_url` is the full-length MP3.
 CORS is enabled for `/api/*` only.
 
@@ -81,8 +89,10 @@ pip install -r requirements-dev.txt
 python generate_media.py          # add --force to re-render existing covers and videos
 python generate_media.py --force --seed 7   # a different set of palettes, fonts and visualizers
 ```
-For each MP3 this writes a 600×600 cover to `static/media/covers/` and a 10-second looping MP4 to
-`static/media/video/`. Each track gets its own palette, title font and cover pattern (drawn from the song's
+Your own media always wins: put a cover at `static/media/covers/<slug>.jpg|jpeg|png|webp` and a canvas video at
+`static/media/video/<slug>.mp4` (the slug comes from the MP3 name, e.g. `perfect`). Anything missing is generated:
+a 600×600 cover and a 20-second looping MP4. Generated files are listed in `static/media/.generated.json`, and
+`--force` only re-renders those, so it never overwrites your artwork. Each track gets its own palette, title font and cover pattern (drawn from the song's
 loudness), plus one of four audio-reactive video visualizers: ring, bars, wave or pulse. The same `--seed` always
 gives the same looks. It also adds or updates the track in the database.
 Titles, artists and home-page sections come from the `CATALOG` table at the top of `generate_media.py`. Edit it

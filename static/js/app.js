@@ -6,6 +6,10 @@
 const GUEST_LIKES_KEY = "guest_liked_songs";     // guests only; never merged into an account
 const LEGACY_LIKES_KEY = "sonoria.likedTracks";   // pre-accounts key, migrated once to the guest key
 const PLAYER_STORAGE_KEY = "sonoria.player";
+const GUEST_RECENT_KEY = "guest_recent_plays";   // guests' listening, for recommendations (accounts use the server)
+const RECENT_PLAYS_MAX = 30;
+const RECS_REFRESH_EVERY = 2;                    // re-weight the Recommended row after this many new plays
+const AUTOPLAY_BATCH = 8;
 
 const savedPlayer = readJSON(PLAYER_STORAGE_KEY, {});
 
@@ -31,6 +35,11 @@ const state = {
   loadSeq: 0,           // bumps on every track load, so each load records at most one play
   recordedSeq: 0,
   errorStreak: 0,       // consecutive load failures, to stop auto-skip cascades
+  autoplay: savedPlayer.autoplay !== false,   // keep playing similar songs when the queue runs out
+  autoplayLoading: null, // in-flight autoplay fetch (a promise), so we never fetch twice at once
+  recentPlays: [],      // [{id, genre, title}], newest first: drives recommendations
+  recsLoaded: false,
+  recsStalePlays: 0,    // plays since the Recommended row was last refreshed
   userQueue: [],        // "Add to queue" tracks: they play next, before the list continues
   queuedTrack: null,    // the user-queue track playing right now (the list position stays put)
 };
@@ -157,6 +166,7 @@ function savePlayerPrefs() {
     repeat: state.repeat,
     volume: audio.volume,
     muted: audio.muted,
+    autoplay: state.autoplay,
   });
 }
 
@@ -490,6 +500,7 @@ function loadCurrent() {
   updateNowPlayingUI();
   if (state.panel === "queue") renderQueue();
   if (state.panel === "lyrics") loadLyrics();
+  maybePrefetchAutoplay();
 }
 
 function handlePlayRejection(err) {
@@ -525,6 +536,22 @@ function playNext({ auto = false } = {}) {
   state.queuedTrack = null; // the list picks up where it left off
   if (stepTo(1)) return;
   state.queuedTrack = wasQueued; // nothing left: stay on the song that just played
+  if (state.autoplay) {
+    // Spotify-style: fetch songs like this one and keep going
+    const seq = state.loadSeq;
+    fetchAutoplay().then((added) => {
+      if (state.loadSeq !== seq) return; // the listener picked something else meanwhile
+      state.queuedTrack = null;
+      if (added && stepTo(1)) return;
+      state.queuedTrack = wasQueued;
+      endOfQueue(auto);
+    });
+    return;
+  }
+  endOfQueue(auto);
+}
+
+function endOfQueue(auto) {
   if (auto) {
     // Finished the queue: park at the start of the last track, ready to replay
     audio.pause();
@@ -872,6 +899,18 @@ function syncCanvas() {
 }
 
 canvasVideo.addEventListener("playing", () => stage.classList.add("canvas-ready"));
+
+// Full-bleed: fill the stage, unless the clip's shape is far off (e.g. a vertical clip on a wide screen),
+// in which case show all of it with feathered edges over the blurred cover.
+function fitCanvas() {
+  const vw = canvasVideo.videoWidth;
+  const vh = canvasVideo.videoHeight;
+  if (!vw || !vh || !stage.clientHeight) return;
+  const mismatch = (vw / vh) / (stage.clientWidth / stage.clientHeight);
+  stage.classList.toggle("canvas-contain", mismatch < 0.7 || mismatch > 1.45);
+}
+canvasVideo.addEventListener("loadedmetadata", fitCanvas);
+window.addEventListener("resize", fitCanvas);
 canvasVideo.addEventListener("error", () => {
   // Missing or broken clip: fall back to the cover art and CSS visualizer bars
   if (canvasVideo.getAttribute("src")) stage.classList.remove("has-canvas", "canvas-ready");
@@ -880,6 +919,7 @@ canvasVideo.addEventListener("error", () => {
 function setMode(mode) {
   state.mode = mode;
   stage.hidden = mode !== "video";
+  if (mode === "video") requestAnimationFrame(fitCanvas);
   document.querySelectorAll(".mode-switch button").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
   });
@@ -979,8 +1019,13 @@ function renderQueue() {
   if (!upcoming.length) {
     showMessage(next, state.repeat ? "Repeating the current track." : "End of queue.");
   }
+  let autoplayLabelShown = false;
   upcoming.slice(0, 50).forEach((queueIndex, offset) => {
     const targetPos = state.pos + 1 + offset;
+    if (state.queue[queueIndex].autoplay && !autoplayLabelShown) {
+      autoplayLabelShown = true;
+      next.insertAdjacentHTML("beforeend", '<div class="autoplay-label">Autoplay · similar to what you\'re playing</div>');
+    }
     next.appendChild(renderQueueItem(state.queue[queueIndex], () => {
       state.pos = targetPos;
       state.queuedTrack = null;
@@ -1392,6 +1437,7 @@ $("liked-play").addEventListener("click", () => {
 function loadHome() {
   loadLocalSections();
   loadItunesSections();
+  if (!state.recsLoaded || state.recsStalePlays > 0) loadRecommendations();
 }
 
 // Locally hosted catalogue: section key from /api/home_sections -> [container id, card renderer]
@@ -1430,27 +1476,23 @@ async function loadItunesSections() {
   if (state.homeLoaded) return;
 
   const jumpBackIn = $("jump-back-in");
-  const recommended = $("recommended");
   const topCharts = $("top-charts");
 
   showMessage(jumpBackIn, "Loading...");
-  recommended.innerHTML = "";
   topCharts.innerHTML = "";
 
   try {
     const resp = await fetch("/api/songs");
     const { sections } = await resp.json();
     const chill = (sections["Chill"] || []).slice(0, 6);
-    const hits = sections["Top Hits"] || [];
-    const charts = sections["Synthwave"] || [];
+    const charts = sections["Top Charts"] || [];
 
     jumpBackIn.innerHTML = "";
-    if (!chill.length && !hits.length && !charts.length) {
+    if (!chill.length && !charts.length) {
       return showMessage(jumpBackIn, "Could not reach the music service right now.");
     }
 
     chill.forEach((t, i) => jumpBackIn.appendChild(renderQuickTile(t, chill, i)));
-    hits.forEach((t, i) => recommended.appendChild(renderCard(t, hits, i)));
     charts.forEach((t, i) => topCharts.appendChild(renderChartRow(t, charts, i)));
     state.homeLoaded = true;
     highlightPlaying();
@@ -1459,9 +1501,117 @@ async function loadItunesSections() {
   }
 }
 
+// ===== Recommendations: re-weighted by what you listen to =====
+function loadRecentPlays() {
+  // Guests keep a short history on this device; accounts start fresh (the server has their history)
+  const saved = state.signedIn ? [] : readJSON(GUEST_RECENT_KEY, []);
+  state.recentPlays = Array.isArray(saved) ? saved.slice(0, RECENT_PLAYS_MAX) : [];
+}
+
+function rememberPlay(track) {
+  const entry = { id: String(track.id), genre: track.genre || "", title: track.title || "" };
+  state.recentPlays = [entry, ...state.recentPlays.filter((p) => p.id !== entry.id)].slice(0, RECENT_PLAYS_MAX);
+  if (!state.signedIn) writeJSON(GUEST_RECENT_KEY, state.recentPlays);
+  state.recsStalePlays += 1;
+  // Refresh the row in place while it's on screen, unless the listener is pointing at it
+  if (state.currentView === "home" && state.recsStalePlays >= RECS_REFRESH_EVERY && !$("recommended").matches(":hover")) {
+    loadRecommendations({ quiet: true });
+  }
+}
+
+function recommendationParams({ limit, seed = null, exclude = [] }) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const genres = state.recentPlays.map((p) => p.genre).filter(Boolean);
+  if (genres.length) params.set("recent", genres.join(","));
+  const ids = new Set([...exclude.map(String), ...state.recentPlays.slice(0, 20).map((p) => p.id)]);
+  if (ids.size) params.set("exclude", [...ids].join(","));
+  state.recentPlays.slice(0, 15).forEach((p) => p.title && params.append("exclude_title", p.title));
+  if (seed) {
+    params.set("seed", String(seed.id));
+    if (seed.genre) params.set("seed_genre", seed.genre);
+    if (seed.title) params.set("seed_title", seed.title);
+  }
+  return params;
+}
+
+let recsRequestId = 0;
+
+async function loadRecommendations({ quiet = false } = {}) {
+  const row = $("recommended");
+  const reason = $("recommended-reason");
+  const requestId = ++recsRequestId;
+  if (!quiet || !row.children.length) showMessage(row, "Finding songs for you…");
+  try {
+    const resp = await fetch(`/api/recommendations?${recommendationParams({ limit: 12 })}`);
+    if (!resp.ok) throw new Error(String(resp.status));
+    const { tracks, reason: why } = await resp.json();
+    if (requestId !== recsRequestId) return;
+    state.recsLoaded = true;
+    state.recsStalePlays = 0;
+    reason.textContent = why || "";
+    if (!tracks.length) return showMessage(row, "Play a few songs and we'll find more like them.");
+    row.classList.remove("refreshed");
+    row.innerHTML = "";
+    tracks.forEach((t, i) => row.appendChild(renderCard(t, tracks, i)));
+    void row.offsetWidth;
+    row.classList.add("refreshed");
+    highlightPlaying();
+  } catch {
+    if (requestId === recsRequestId && !row.querySelector(".card")) {
+      showMessage(row, "Could not load recommendations right now.");
+    }
+  }
+}
+
+// ===== Autoplay: when the list and your queue run out, keep going with similar songs =====
+function maybePrefetchAutoplay() {
+  const remaining = state.order.length - state.pos - 1;
+  if (state.autoplay && !state.userQueue.length && remaining <= 1 && currentTrack()) fetchAutoplay();
+}
+
+function fetchAutoplay() {
+  if (state.autoplayLoading) return state.autoplayLoading;
+  const seed = currentTrack();
+  const params = recommendationParams({ limit: AUTOPLAY_BATCH, seed, exclude: state.queue.map((t) => t.id) });
+  state.autoplayLoading = fetch(`/api/recommendations?${params}`)
+    .then((resp) => (resp.ok ? resp.json() : { tracks: [] }))
+    .then(({ tracks }) => {
+      const inQueue = new Set(state.queue.map((t) => String(t.id)));
+      const fresh = tracks.filter((t) => t.stream_url && !inQueue.has(String(t.id)));
+      fresh.forEach((t) => {
+        state.queue.push({ ...t, autoplay: true });
+        state.order.push(state.queue.length - 1);
+      });
+      if (fresh.length && state.panel === "queue") renderQueue();
+      return fresh.length;
+    })
+    .catch(() => 0)
+    .finally(() => { state.autoplayLoading = null; });
+  return state.autoplayLoading;
+}
+
+function setAutoplay(on) {
+  state.autoplay = on;
+  $("autoplay-toggle").checked = on;
+  savePlayerPrefs();
+  if (on) {
+    maybePrefetchAutoplay();
+  } else {
+    // Drop autoplay songs that haven't played yet
+    state.order = state.order.filter((queueIndex, pos) => pos <= state.pos || !state.queue[queueIndex].autoplay);
+  }
+  if (state.panel === "queue") renderQueue();
+  showToast(on ? "Autoplay on: similar songs keep playing" : "Autoplay off", { duration: 1800 });
+}
+
+$("autoplay-toggle").checked = state.autoplay;
+$("autoplay-toggle").addEventListener("change", (e) => setAutoplay(e.target.checked));
+
 // ===== Genre badge =====
 async function recordPlay(track) {
-  if (!track || (!track.local && !state.signedIn)) return; // guests only bump catalogue play counts
+  if (!track) return;
+  rememberPlay(track);
+  if (!track.local && !state.signedIn) return; // guests only bump catalogue play counts
   try {
     const resp = await fetch("/api/track/play", {
       method: "POST",
@@ -1865,6 +2015,7 @@ updateVolumeUI();
 updateModeButtons();
 updatePlayButton();
 loadLiked();
+loadRecentPlays();
 buildStageBars();
 renderExplore();
 

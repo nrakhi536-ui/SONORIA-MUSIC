@@ -242,7 +242,8 @@ def run(p, spa_url, shots, channel, headed):
     page.wait_for_timeout(300)
     page.screenshot(path=f"{shots}/p4_toast.png")
 
-    # ---------- End of queue ----------
+    # ---------- End of queue (autoplay off; with it on, similar songs keep playing) ----------
+    js(page, "setAutoplay(false)")
     wait_js(page, "isFinite(audio.duration)"); js(page, "audio.currentTime = audio.duration - 0.3")
     wait_js(page, "audio.paused", timeout=8000)
     check("end of queue stops cleanly", js(page, "state.pos") == 1 and js(page, "audio.currentTime") < 1)

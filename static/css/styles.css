@@ -1151,8 +1151,7 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
   animation-play-state: paused;
 }
 .audio-playing .stage-bars i { animation-play-state: running; }
-/* Canvas: a track's looping 10 s clip replaces the cover art and CSS visualizer bars */
-.stage-cover { position: relative; overflow: hidden; }
+/* Canvas: the track's looping ~20 s clip fills the whole stage (full-bleed) */
 #canvas-video {
   position: absolute;
   inset: 0;
@@ -1160,12 +1159,59 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.6s ease;
 }
-.stage.has-canvas .stage-cover { width: min(56vh, 460px, 80vw); }
-.stage.has-canvas.canvas-ready #canvas-video { opacity: 1; }
-.stage.has-canvas .stage-cover { animation: none; }
-.stage.has-canvas .stage-bars { display: none; }
+/* Clips far off the stage's shape are shown whole, feathered into the blurred cover behind */
+.stage.canvas-contain #canvas-video {
+  object-fit: contain;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+}
+.stage-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to top, rgba(11, 7, 17, 0.88) 0%, rgba(11, 7, 17, 0.2) 38%, transparent 55%),
+    linear-gradient(to bottom, rgba(11, 7, 17, 0.45), transparent 22%);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+.stage.has-canvas.canvas-ready #canvas-video,
+.stage.has-canvas.canvas-ready .stage-scrim { opacity: 1; }
+.stage.has-canvas.canvas-ready .stage-cover,
+.stage.has-canvas.canvas-ready .stage-bars { display: none; }
+.stage.has-canvas.canvas-ready .stage-inner {
+  align-self: end;
+  justify-self: start;
+  align-items: flex-start;
+  padding: 36px 40px;
+  text-align: left;
+}
+.stage.has-canvas.canvas-ready .stage-title { font-size: var(--fs-hero); text-shadow: 0 2px 20px rgba(0, 0, 0, 0.5); }
+
+/* No canvas (or it failed): the cover slowly zooms and drifts under a moving light, so the view never goes static */
+.stage-cover { position: relative; overflow: hidden; background-size: 112%; }
+.stage-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, rgba(147, 80, 115, 0.35), transparent 35%, rgba(246, 219, 192, 0.28) 55%, transparent 75%);
+  background-size: 260% 260%;
+  mix-blend-mode: soft-light;
+  animation: canvas-shimmer 9s ease-in-out infinite alternate;
+  animation-play-state: paused;
+}
+.audio-playing .stage-cover { animation: kenburns 22s ease-in-out infinite alternate, breathe 4s ease-in-out infinite; }
+.audio-playing .stage-cover::after { animation-play-state: running; }
+.stage-bg { animation: bg-drift 30s ease-in-out infinite alternate; animation-play-state: paused; }
+.audio-playing .stage-bg { animation-play-state: running; }
+@keyframes kenburns {
+  from { background-size: 112%; background-position: 30% 35%; }
+  to { background-size: 138%; background-position: 70% 65%; }
+}
+@keyframes canvas-shimmer { from { background-position: 0% 0%; } to { background-position: 100% 100%; } }
+@keyframes bg-drift { to { transform: scale(1.25) translate(-3%, 2%); } }
 .stage-title { font-family: var(--font-heading); font-size: var(--fs-h1); font-weight: 700; }
 .stage-artist { color: var(--text-muted); }
 
@@ -1481,6 +1527,65 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .share-btn svg.filled { fill: currentColor; stroke: none; }
 .share-btn.share-wa svg { color: #25D366; }
 .share-btn.copied { color: var(--bg-primary); background: var(--highlight-warmth); border-color: var(--highlight-warmth); }
+
+/* =====================================================================
+   Recommended row + autoplay
+   ===================================================================== */
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.section-head .section-title { margin-bottom: 14px; }
+.section-reason { font-size: var(--fs-small); color: var(--text-muted); }
+.card-row.refreshed .card { animation: rec-in 0.45s ease both; }
+.card-row.refreshed .card:nth-child(2) { animation-delay: 0.04s; }
+.card-row.refreshed .card:nth-child(3) { animation-delay: 0.08s; }
+.card-row.refreshed .card:nth-child(4) { animation-delay: 0.12s; }
+.card-row.refreshed .card:nth-child(n+5) { animation-delay: 0.16s; }
+@keyframes rec-in { from { opacity: 0; transform: translateY(8px); } }
+
+.autoplay-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-midnight);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+}
+.autoplay-toggle > span:first-child { flex: 1; font-size: var(--fs-small); line-height: 1.3; }
+.autoplay-toggle small { color: var(--text-muted); }
+.autoplay-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.autoplay-toggle .switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--track-empty);
+  transition: background 0.2s ease;
+}
+.autoplay-toggle .switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transition: transform 0.2s ease;
+}
+.autoplay-toggle input:checked + .switch { background: var(--accent-secondary); }
+.autoplay-toggle input:checked + .switch::after { transform: translateX(16px); background: var(--highlight-warmth); }
+.autoplay-toggle input:focus-visible + .switch { outline: 2px solid var(--highlight-warmth); outline-offset: 2px; }
+.autoplay-label {
+  margin: 12px 8px 6px;
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--highlight-warmth);
+}
 
 /* =====================================================================
    Track menu (⋯) and the user queue

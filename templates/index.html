@@ -87,7 +87,10 @@
         <h2 class="section-title">Jump Back In</h2>
         <div class="quick-grid" id="jump-back-in"></div>
 
-        <h2 class="section-title">Recommended for You</h2>
+        <div class="section-head">
+          <h2 class="section-title">Recommended for You</h2>
+          <span class="section-reason" id="recommended-reason"></span>
+        </div>
         <div class="card-row" id="recommended"></div>
 
         <h2 class="section-title">Top Charts</h2>
@@ -162,10 +165,11 @@
     <!-- ===== Video / Visualizer stage (overlays the main workspace) ===== -->
     <section class="stage" id="stage" hidden aria-label="Visualizer">
       <div class="stage-bg" id="stage-bg"></div>
+      <!-- Full-bleed canvas video; without one, the cover below animates instead -->
+      <video id="canvas-video" muted loop playsinline preload="none" aria-hidden="true"></video>
+      <div class="stage-scrim" aria-hidden="true"></div>
       <div class="stage-inner">
-        <div class="stage-cover" id="stage-cover">
-          <video id="canvas-video" muted loop playsinline preload="none" aria-hidden="true"></video>
-        </div>
+        <div class="stage-cover" id="stage-cover"></div>
         <div class="stage-bars" id="stage-bars" aria-hidden="true"></div>
         <div class="stage-title" id="stage-title">Nothing playing</div>
         <div class="stage-artist" id="stage-artist">Pick a track to start</div>
@@ -183,6 +187,11 @@
       </div>
 
       <div class="panel-body" id="panel-queue" role="tabpanel" aria-labelledby="tab-queue">
+        <label class="autoplay-toggle" title="When your queue ends, keep playing songs like the last one">
+          <span><strong>Autoplay</strong><br><small>Keep playing similar songs</small></span>
+          <input type="checkbox" id="autoplay-toggle" role="switch">
+          <span class="switch" aria-hidden="true"></span>
+        </label>
         <div class="panel-label">Now playing</div>
         <div id="queue-now"></div>
         <div class="panel-label queue-user-label" id="queue-user-label" hidden>

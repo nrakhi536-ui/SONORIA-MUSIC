@@ -283,8 +283,86 @@
     const fileInput = $("upload-file");
     const dropzone = $("dropzone");
     const error = $("upload-error");
-    const MAX_BYTES = 20 * 1024 * 1024;
+    const MB = 1024 * 1024;
+    const MAX_BYTES = 20 * MB;
     const ALLOWED = ["mp3", "wav", "m4a"];
+    const MAX_CANVAS_SECONDS = 22;
+    const mediaErrors = { cover: "", canvas: "" };
+    const coverInput = $("upload-cover");
+    const canvasInput = $("upload-canvas");
+
+    function showMediaError() {
+      error.textContent = mediaErrors.cover || mediaErrors.canvas || "";
+    }
+
+    function previewCover(file) {
+      const preview = $("cover-preview");
+      mediaErrors.cover = "";
+      if (preview.dataset.url) URL.revokeObjectURL(preview.dataset.url);
+      if (!file) {
+        preview.classList.remove("has-image");
+        $("cover-title").innerHTML = "Cover art <em>(optional)</em>";
+        $("cover-drop").classList.remove("has-file");
+        return showMediaError();
+      }
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+        mediaErrors.cover = "Cover art must be a JPG, PNG or WebP image.";
+      } else if (file.size > 5 * MB) {
+        mediaErrors.cover = "Cover art must be 5 MB or smaller.";
+      } else {
+        preview.dataset.url = URL.createObjectURL(file);
+        preview.style.backgroundImage = `url(${preview.dataset.url})`;
+        preview.classList.add("has-image");
+      }
+      $("cover-title").textContent = file.name;
+      $("cover-drop").classList.toggle("has-file", !mediaErrors.cover);
+      showMediaError();
+    }
+
+    function previewCanvas(file) {
+      const video = $("canvas-preview");
+      mediaErrors.canvas = "";
+      if (video.src) URL.revokeObjectURL(video.src);
+      video.hidden = true;
+      video.removeAttribute("src");
+      if (!file) {
+        $("canvas-title").innerHTML = "Canvas video <em>(optional)</em>";
+        $("canvas-drop").classList.remove("has-file");
+        return showMediaError();
+      }
+      $("canvas-title").textContent = file.name;
+      if (!/\.mp4$/i.test(file.name) && file.type !== "video/mp4") {
+        mediaErrors.canvas = "The canvas video must be an MP4 file.";
+      } else if (file.size > 15 * MB) {
+        mediaErrors.canvas = "The canvas video must be 15 MB or smaller.";
+      } else {
+        video.src = URL.createObjectURL(file);
+        video.onloadedmetadata = () => {
+          if (video.duration > MAX_CANVAS_SECONDS) {
+            mediaErrors.canvas = `That clip is ${Math.round(video.duration)} s long; keep canvas videos to about 20 seconds.`;
+            $("canvas-drop").classList.remove("has-file");
+          } else {
+            $("canvas-title").textContent = `${file.name} · ${video.duration.toFixed(1)} s`;
+            $("canvas-drop").classList.add("has-file");
+            video.hidden = false;
+            video.play().catch(() => {});
+          }
+          showMediaError();
+        };
+        video.onerror = () => {
+          mediaErrors.canvas = "That video can't be played here; export it as an H.264 MP4.";
+          showMediaError();
+        };
+      }
+      showMediaError();
+    }
+
+    coverInput.addEventListener("change", () => previewCover(coverInput.files[0]));
+    canvasInput.addEventListener("change", () => previewCanvas(canvasInput.files[0]));
+    document.querySelectorAll(".dropzone.small").forEach((zone) => {
+      ["dragenter", "dragover"].forEach((type) => zone.addEventListener(type, () => zone.classList.add("dragover")));
+      ["dragleave", "drop"].forEach((type) => zone.addEventListener(type, () => zone.classList.remove("dragover")));
+    });
 
     function chosen(file) {
       $("drop-title").textContent = file ? file.name : "Drop an audio file here, or click to choose";
@@ -318,6 +396,7 @@
       if (!ALLOWED.includes(file.name.split(".").pop().toLowerCase())) return (error.textContent = "Only MP3, WAV or M4A files.");
       if (file.size > MAX_BYTES) return (error.textContent = "That file is over the 20 MB limit.");
       if (!title) return (error.textContent = "Give the track a title.");
+      if (mediaErrors.cover || mediaErrors.canvas) return showMediaError();
 
       const submit = $("upload-submit");
       submit.disabled = true;
