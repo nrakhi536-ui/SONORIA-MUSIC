@@ -1,8 +1,66 @@
 {% extends "base.html" %}
+{% from "_icons.html" import svg_icon %}
+{% from "_tracks.html" import track_row, stat_card %}
+{% set active_nav = "profile" %}
+{% block title %}{{ current_user.username }}{% endblock %}
+
 {% block content %}
-<div class="row-title">My Profile</div>
-{% if tag %}<h2>Your Vibe: "{{ tag }}"</h2><p>Top genre: {{ genre }}</p>
-<p><a href="/tag/{{ current_user.username }}" style="color:#e88fc0;">Shareable tag page</a></p>
-{% else %}<p class="empty-msg">Play a few tracks to unlock your tag!</p>{% endif %}
-<h2>Streak: {{ streak }} day{{ 's' if streak != 1 else '' }} 🔥</h2>
+<section class="pg-hero glass-card">
+  <div class="hero-avatar" aria-hidden="true"><span>{{ current_user.username[0]|upper }}</span></div>
+  <div class="hero-meta">
+    <div class="hero-kind">{{ svg_icon("user") }} {{ role_label(current_user.role) }} profile</div>
+    <h1 class="hero-title">{{ current_user.username }}</h1>
+    <div class="hero-stats">
+      {% if tag %}
+        <span class="genre-badge" title="Top genre: {{ genre or 'a bit of everything' }}">{{ tag }}</span>
+        <a class="hero-link" href="/tag/{{ current_user.username }}">Shareable badge page ↗</a>
+      {% else %}
+        <span>Play a few songs to unlock your listener badge.</span>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<div class="stat-grid">
+  {{ stat_card("streams", "Songs played", stats.total_plays) }}
+  {{ stat_card("flame", "Day streak", streak) }}
+  {{ stat_card("list", "Playlists", stats.playlists) }}
+  {{ stat_card("heart", "Liked songs", stats.likes) }}
+</div>
+
+<div class="tabs" data-tabs>
+  <div class="tab-list" role="tablist" aria-label="Profile">
+    <button type="button" role="tab" data-tab="taste">Your taste</button>
+    <button type="button" role="tab" data-tab="recent">Recently played</button>
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="taste">
+    {% if genre_counts %}
+      {% set most = genre_counts[0][1] %}
+      <div class="bar-list">
+        {% for g, n in genre_counts %}
+          <div class="bar-row" style="--i: {{ loop.index0 }}">
+            <span class="bar-label">{{ g }}</span>
+            <span class="bar-track"><span class="bar-fill" data-bar="{{ n }}" data-bar-max="{{ most }}"></span></span>
+            <span class="bar-value">{{ n }} play{{ 's' if n != 1 }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="empty-msg">Your genre mix shows up here once you start listening.</p>
+    {% endif %}
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="recent" hidden>
+    {% if recent %}
+      <ol class="trk-list">
+        {% for t in recent %}{{ track_row(t, loop.index0) }}{% endfor %}
+      </ol>
+    {% else %}
+      <p class="empty-msg">Sonoria catalogue tracks you play show up here.</p>
+    {% endif %}
+  </div>
+</div>
+
+<script type="application/json" id="page-tracks">{{ recent|tojson }}</script>
 {% endblock %}

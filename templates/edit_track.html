@@ -1,9 +1,29 @@
 {% extends "base.html" %}
+{% from "_icons.html" import svg_icon %}
+{% set active_nav = "dashboard" %}
+{% block title %}Edit “{{ track.title }}”{% endblock %}
+
 {% block content %}
-<div class="row-title">Edit Track</div>
-{% if error %}<p style="color:#ff8a8a">{{ error }}</p>{% endif %}
-<form method="POST">
-  <input name="title" value="{{ track.title }}" required style="padding:8px;">
-  <button type="submit">Save</button>
+<form class="upload-form glass-card edit-form" method="POST">
+  <div class="hero-kind">{{ svg_icon("edit") }} Edit track</div>
+  <h1 class="hero-title">{{ track.title }}</h1>
+  <div class="form-row">
+    <label class="field">
+      <span>Title</span>
+      <input type="text" name="title" value="{{ track.title }}" maxlength="200" required autofocus>
+    </label>
+    <label class="field">
+      <span>Genre</span>
+      <select name="genre">
+        {% for g in genres %}<option value="{{ g }}"{% if g == track.genre %} selected{% endif %}>{{ g }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  <div class="form-actions">
+    <span class="form-note">Changes go live immediately.</span>
+    <a class="pill-btn ghost" href="/artist/dashboard?tab=tracks">Cancel</a>
+    <button type="submit" class="pill-btn">Save changes</button>
+  </div>
 </form>
 {% endblock %}

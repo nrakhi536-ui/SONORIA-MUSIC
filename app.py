@@ -1,13 +1,16 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
-from models import db, User, Track, PlayHistory, Like, Playlist, playlist_tracks, upgrade_schema
-from badges import get_user_genre_badge, record_genre_play
+from models import db, User, Track, PlayHistory, Like, Playlist, ExternalTrack, UserPlayCount, playlist_tracks, upgrade_schema
+from badges import get_user_genre_badge, record_genre_play, GENRE_BADGES
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 import requests
 import feedparser
 import os
+import uuid
+from collections import Counter
+from pathlib import Path
 import re as re_module
 from werkzeug.utils import secure_filename
 
@@ -25,6 +28,15 @@ with app.app_context():
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
+
+# The database keeps the original role keys; people only ever see these labels.
+ROLE_LABELS = {"customer": "User", "artist": "Artist", "admin": "Admin"}
+SIGNUP_ROLES = ("customer", "artist")
+
+
+@app.context_processor
+def inject_role_label():
+    return {"role_label": lambda role: ROLE_LABELS.get(role, (role or "").title())}
 
 
 # ---------- iTunes SEARCH API ----------
@@ -267,10 +279,134 @@ def api_user_badge():
     return jsonify({"badge": get_user_genre_badge(current_user.id)})
 
 
+# ---------- LIKES (signed-in accounts; guests keep theirs in localStorage) ----------
+
+ITUNES_LOOKUP_URL = "https://itunes.apple.com/lookup"
+
+
+def external_track_for(itunes_id):
+    """The cached ExternalTrack for an iTunes song, looked up on iTunes the first time (never trusted from the client)."""
+    external_id = f"itunes:{itunes_id}"
+    cached = db.session.get(ExternalTrack, external_id)
+    if cached:
+        return cached
+    resp = requests.get(ITUNES_LOOKUP_URL, params={"id": itunes_id, "entity": "song"}, timeout=5)
+    resp.raise_for_status()
+    songs = [r for r in resp.json().get("results", []) if r.get("kind") == "song"]
+    if not songs:
+        return None
+    data = normalize_itunes_track(songs[0])
+    cached = ExternalTrack(external_id=external_id, title=data["title"] or "Untitled", artist=data["artist"],
+                           album=data["album"], cover=data["cover"], stream_url=data["stream_url"],
+                           duration_ms=data["duration"], genre=data["genre"])
+    db.session.add(cached)
+    return cached
+
+
+def like_filter(raw_id):
+    """Like.query filter kwargs for a client track id ("local-3" or an iTunes id), or None if it's malformed."""
+    if isinstance(raw_id, str) and raw_id.startswith("local-"):
+        track_id = parse_local_track_id(raw_id)
+        return {"track_id": track_id} if track_id is not None else None
+    itunes_id = str(raw_id)
+    return {"external_id": f"itunes:{itunes_id}"} if itunes_id.isdigit() else None
+
+
+def liked_track_dict(like):
+    if like.track:
+        return like.track.to_dict()
+    return like.external_track.to_dict() if like.external_track else None
+
+
+@app.route("/api/likes")
+@api_login_required
+def api_list_likes():
+    """The signed-in account's liked songs, most recent first, in the normalized track shape."""
+    likes = Like.query.filter_by(user_id=current_user.id).order_by(Like.liked_at.desc(), Like.id.desc()).all()
+    return jsonify({"tracks": [t for t in map(liked_track_dict, likes) if t]})
+
+
+@app.route("/api/likes", methods=["POST"])
+@api_login_required
+def api_add_like():
+    """Likes {"track_id": "local-3"} or {"track_id": <iTunes id>}; idempotent."""
+    raw_id = (request.get_json(silent=True) or {}).get("track_id")
+    where = like_filter(raw_id)
+    if not where:
+        return jsonify({"error": "Unknown track."}), 400
+    existing = Like.query.filter_by(user_id=current_user.id, **where).first()
+    if existing:
+        return jsonify({"track": liked_track_dict(existing), "liked": True})
+
+    if "track_id" in where:
+        track = playable_track(raw_id)
+        if not track:
+            return jsonify({"error": "Track not found."}), 404
+        like = Like(user_id=current_user.id, track_id=track.id)
+    else:
+        try:
+            external = external_track_for(str(raw_id))
+        except (requests.RequestException, ValueError):
+            return jsonify({"error": "Could not reach the music service to save this like."}), 503
+        if not external:
+            return jsonify({"error": "Track not found."}), 404
+        like = Like(user_id=current_user.id, external_id=external.external_id)
+    db.session.add(like)
+    db.session.commit()
+    return jsonify({"track": liked_track_dict(like), "liked": True}), 201
+
+
+@app.route("/api/likes/<track_id>", methods=["DELETE"])
+@api_login_required
+def api_remove_like(track_id):
+    where = like_filter(track_id)
+    if not where:
+        return jsonify({"error": "Unknown track."}), 400
+    Like.query.filter_by(user_id=current_user.id, **where).delete()
+    db.session.commit()
+    return jsonify({"liked": False})
+
+
 LRCLIB_URL = "https://lrclib.net/api"
 LRC_TIMESTAMP = re_module.compile(r"^\s*(\[\d+:\d+(?:\.\d+)?\])+\s*")
 LRC_TAG = re_module.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 SYNC_DURATION_TOLERANCE = 4  # seconds; a longer or shorter recording would put every line at the wrong time
+LRC_ID_TAG = re_module.compile(r"^\s*\[[a-z]+:.*\]\s*$", re_module.IGNORECASE)  # [ar: ...], [ti: ...] headers
+# Timed lyrics for catalogue tracks: <slug>.lrc, where slug comes from the audio filename.
+# Files you add here win over LRCLIB; synced LRCLIB matches are saved here too, so they work offline.
+LYRICS_DIR = Path(app.instance_path) / "lyrics"
+
+
+def track_slug(track):
+    stem = Path(track.audio_file or track.title or "").stem
+    return re_module.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+
+
+def local_lyrics_path(track):
+    return LYRICS_DIR / f"{track_slug(track)}.lrc"
+
+
+def read_local_lyrics(track):
+    """{lines, synced, instrumental, source} from the track's .lrc file, or None if there isn't one."""
+    path = local_lyrics_path(track)
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    synced = parse_synced_lyrics(text)
+    if synced:
+        lines = [line["text"] for line in synced]
+    else:  # an untimed file still shows as plain lyrics
+        lines = [line.rstrip() for line in text.splitlines() if not LRC_ID_TAG.match(line)]
+    return {"lines": lines, "synced": synced or None, "instrumental": False, "source": "local"}
+
+
+def save_local_lyrics(track, record):
+    """Caches an LRCLIB record's timed lyrics as the track's .lrc file."""
+    LYRICS_DIR.mkdir(parents=True, exist_ok=True)
+    minutes, seconds = divmod(int(record.get("duration") or 0), 60)
+    header = [f"[ar: {track.artist.username}]", f"[ti: {track.title}]", f"[length: {minutes:02d}:{seconds:02d}]",
+              f"[re: LRCLIB #{record.get('id', '')}]", ""]
+    local_lyrics_path(track).write_text("\n".join(header) + record["syncedLyrics"].strip() + "\n", encoding="utf-8")
 
 
 def parse_synced_lyrics(lrc):
@@ -312,36 +448,51 @@ def best_lyrics_match(results, duration=None):
 
 @app.route("/api/lyrics")
 def api_lyrics():
-    """Looks up lyrics on LRCLIB by artist + title (+ optional album / duration in seconds).
+    """Lyrics by artist + title (+ optional album / duration in seconds, or track_id=local-3).
 
-    Returns {lines, synced, instrumental, error}; synced is null when no timed lyrics match the recording.
+    Catalogue tracks use their .lrc file when there is one. Otherwise LRCLIB's /api/get is tried first,
+    then a search. Returns {lines, synced, instrumental, source, error}; synced is null when no timed
+    lyrics match the recording, so the client falls back to plain lines.
     """
-    artist = request.args.get("artist", "").strip()
-    title = request.args.get("title", "").strip()
+    raw_track_id = request.args.get("track_id", "")
+    track = playable_track(raw_track_id) if raw_track_id.startswith("local-") else None
+    if track:
+        local = read_local_lyrics(track)
+        if local:
+            return jsonify({**local, "error": None})
+        artist, title = track.artist.username, track.title
+        album, duration = "", round(track.duration_ms / 1000) if track.duration_ms else None
+    else:
+        artist = request.args.get("artist", "").strip()
+        title = request.args.get("title", "").strip()
+        album, duration_arg = request.args.get("album", "").strip(), request.args.get("duration", "")
+        duration = int(duration_arg) if duration_arg.isdigit() else None
     if not artist or not title:
         return jsonify({"lines": [], "synced": None, "error": "Missing 'artist' or 'title' parameter"}), 400
 
     params = {"artist_name": artist, "track_name": title}
     headers = {"User-Agent": "Sonoria/1.0 (music streaming demo)"}
-    album, duration_arg = request.args.get("album", "").strip(), request.args.get("duration", "")
-    duration = int(duration_arg) if duration_arg.isdigit() else None
     try:
-        # Exact match first (needs album + duration), then fall back to fuzzy search.
-        if album and duration:
-            resp = requests.get(f"{LRCLIB_URL}/get", headers=headers, timeout=5,
-                                params={**params, "album_name": album, "duration": duration})
-            if resp.ok:
-                return jsonify({**lyrics_payload(resp.json(), duration), "error": None})
-
-        resp = requests.get(f"{LRCLIB_URL}/search", params=params, headers=headers, timeout=5)
-        resp.raise_for_status()
-        results = [r for r in resp.json() if r.get("plainLyrics") or r.get("syncedLyrics") or r.get("instrumental")]
+        record = None
+        resp = requests.get(f"{LRCLIB_URL}/get", headers=headers, timeout=5,
+                            params={**params, **({"album_name": album} if album else {}),
+                                    **({"duration": duration} if duration else {})})
+        if resp.ok:
+            record = resp.json()
+        else:
+            resp = requests.get(f"{LRCLIB_URL}/search", params=params, headers=headers, timeout=5)
+            resp.raise_for_status()
+            results = [r for r in resp.json() if r.get("plainLyrics") or r.get("syncedLyrics") or r.get("instrumental")]
+            record = best_lyrics_match(results, duration) if results else None
     except (requests.RequestException, ValueError):
         return jsonify({"lines": [], "synced": None, "error": "Could not reach the lyrics service right now."}), 503
 
-    if not results:
+    if not record:
         return jsonify({"lines": [], "synced": None, "error": "No lyrics found for this track."}), 404
-    return jsonify({**lyrics_payload(best_lyrics_match(results, duration), duration), "error": None})
+    payload = lyrics_payload(record, duration)
+    if track and payload["synced"]:
+        save_local_lyrics(track, record)
+    return jsonify({**payload, "source": "lrclib", "error": None})
 
 
 @login_manager.user_loader
@@ -360,6 +511,8 @@ def signup():
 
         if role == "admin":
             return "Admin accounts cannot be created through signup", 403
+        if role not in SIGNUP_ROLES:
+            return render_template("signup.html", error="Choose User or Artist.")
 
         if User.query.filter_by(username=username).first():
             return render_template("signup.html", error="Username already taken")
@@ -395,7 +548,7 @@ def logout():
     return redirect(url_for("login"))
 
 
-# ---------- CUSTOMER: HOME ----------
+# ---------- HOME ----------
 
 @app.route("/spa")
 @app.route("/")  # registered first (decorators apply bottom-up), so url_for("home") builds "/"
@@ -459,13 +612,30 @@ def play_track(track_id):
     return redirect(url_for("classic_home"))
 
 
+def artist_stats(tracks):
+    """Totals shared by the public artist page and the artist dashboard."""
+    total = sum(t.play_count or 0 for t in tracks)
+    top = max(tracks, key=lambda t: t.play_count or 0) if tracks else None
+    genres = Counter(t.genre or "Other" for t in tracks).most_common()
+    return {
+        "total_streams": total,
+        "track_count": len(tracks),
+        "top_track": top.title if top and top.play_count else None,
+        "avg_streams": round(total / len(tracks), 1) if tracks else 0,
+        "genres": genres,
+    }
+
+
 @app.route("/artist/<int:artist_id>")
 def artist_page(artist_id):
     artist = db.session.get(User, artist_id)
     if not artist or artist.role != "artist":
         return "Artist not found", 404
-    tracks = Track.query.filter_by(artist_id=artist_id, approved=True).all()
-    return render_template("artist_page.html", artist=artist, tracks=tracks)
+    tracks = (Track.query.filter_by(artist_id=artist_id, approved=True)
+              .order_by(Track.play_count.desc(), Track.id).all())
+    playable = [t.to_dict() for t in tracks if t.stream_url]
+    return render_template("artist_page.html", artist=artist, tracks=tracks, playable=playable,
+                           stats=artist_stats(tracks))
 
 
 # ---------- LIBRARY / LIKED SONGS ----------
@@ -475,7 +645,7 @@ def artist_page(artist_id):
 def library():
     liked = (Like.query.filter_by(user_id=current_user.id)
              .order_by(Like.liked_at.desc()).all())
-    liked_tracks = [l.track for l in liked]
+    liked_tracks = [l.track for l in liked if l.track]  # this page only lists catalogue tracks
     return render_template("library.html", liked_tracks=liked_tracks)
 
 
@@ -577,6 +747,7 @@ def search_podcasts():
 
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 ALLOWED_EXTENSIONS = {"mp3", "wav", "m4a"}
+UPLOAD_GENRES = list(GENRE_BADGES) + ["Other"]
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
@@ -585,80 +756,142 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def wants_json():
+    return request.accept_mimetypes.best == "application/json"
+
+
+def artist_only():
+    """None if the current user may use the artist tools, else the error response."""
+    if current_user.role != "artist":
+        return (jsonify({"error": "Artists only."}), 403) if wants_json() else ("Not authorized", 403)
+    return None
+
+
+def own_track_or_error(track_id):
+    """(track, None) for the current artist's own track, else (None, error response)."""
+    track = db.session.get(Track, track_id)
+    if not track:
+        return None, ((jsonify({"error": "Track not found."}), 404) if wants_json() else ("Track not found", 404))
+    if track.artist_id != current_user.id:
+        return None, ((jsonify({"error": "That isn't your track."}), 403) if wants_json()
+                      else ("Not authorized - this isn't your track", 403))
+    return track, None
+
+
+@app.errorhandler(413)
+def upload_too_large(_error):
+    message = "That file is over the 20 MB upload limit."
+    return (jsonify({"error": message}), 413) if wants_json() else (message, 413)
+
+
 @app.route("/artist/dashboard")
 @login_required
 def artist_dashboard():
-    if current_user.role != "artist":
-        return "Not authorized", 403
+    denied = artist_only()
+    if denied:
+        return denied
     my_tracks = Track.query.filter_by(artist_id=current_user.id).order_by(Track.id.desc()).all()
-    return render_template("artist_dashboard.html", tracks=my_tracks)
+    return render_template("artist_dashboard.html", tracks=my_tracks, stats=artist_stats(my_tracks),
+                           genres=UPLOAD_GENRES, track_data=[t.to_dict() for t in my_tracks if t.stream_url],
+                           active_tab=request.args.get("tab", "overview"))
 
 
 @app.route("/artist/upload", methods=["GET", "POST"])
 @login_required
 def upload_track():
-    if current_user.role != "artist":
-        return "Not authorized", 403
+    """Publishes an upload straight away: no admin approval. Answers JSON to fetch/XHR, redirects forms."""
+    denied = artist_only()
+    if denied:
+        return denied
+    if request.method == "GET":
+        return redirect(url_for("artist_dashboard", tab="upload"))
 
-    if request.method == "POST":
-        title = request.form.get("title", "").strip()
-        genre = request.form.get("genre", "Other")
-        file = request.files.get("audio_file")
+    def fail(message):
+        if wants_json():
+            return jsonify({"error": message}), 400
+        return redirect(url_for("artist_dashboard", tab="upload", error=message))
 
-        if not title:
-            return render_template("upload.html", error="Title is required.")
-        if not file or file.filename == "":
-            return render_template("upload.html", error="Please choose an audio file.")
-        if not allowed_file(file.filename):
-            return render_template("upload.html", error="Only mp3, wav, or m4a files are allowed.")
+    title = request.form.get("title", "").strip()
+    genre = request.form.get("genre", "Other")
+    file = request.files.get("audio_file")
+    if not title:
+        return fail("Title is required.")
+    if len(title) > 200:
+        return fail("Titles can be at most 200 characters.")
+    if genre not in UPLOAD_GENRES:
+        genre = "Other"
+    if not file or file.filename == "":
+        return fail("Please choose an audio file.")
+    if not allowed_file(file.filename):
+        return fail("Only mp3, wav, or m4a files are allowed.")
 
-        filename = secure_filename(file.filename)
-        file.save(os.path.join(UPLOAD_FOLDER, filename))
+    # Unique name so two artists uploading "song.mp3" never overwrite each other
+    extension = file.filename.rsplit(".", 1)[1].lower()
+    safe = secure_filename(file.filename) or f"track.{extension}"
+    filename = f"{uuid.uuid4().hex[:10]}_{safe}"
+    file.save(os.path.join(UPLOAD_FOLDER, filename))
 
-        track = Track(title=title, artist_id=current_user.id, audio_file=filename, genre=genre)
-        db.session.add(track)
-        db.session.commit()
-        return redirect(url_for("artist_dashboard"))
-
-    return render_template("upload.html", error=None)
+    track = Track(title=title, artist_id=current_user.id, audio_file=filename, genre=genre,
+                  approved=True, play_count=0, stream_url=f"/static/uploads/{filename}")
+    db.session.add(track)
+    db.session.commit()
+    if wants_json():
+        return jsonify({"track": track.to_dict()}), 201
+    return redirect(url_for("artist_dashboard", tab="tracks"))
 
 
 @app.route("/artist/edit/<int:track_id>", methods=["GET", "POST"])
 @login_required
 def edit_track(track_id):
-    if current_user.role != "artist":
-        return "Not authorized", 403
-    track = db.session.get(Track, track_id)
-    if not track:
-        return "Track not found", 404
-    if track.artist_id != current_user.id:
-        return "Not authorized - this isn't your track", 403
+    denied = artist_only()
+    if denied:
+        return denied
+    track, error = own_track_or_error(track_id)
+    if error:
+        return error
 
     if request.method == "POST":
-        new_title = request.form.get("title", "").strip()
-        if not new_title:
-            return render_template("edit_track.html", track=track, error="Title is required.")
+        data = request.get_json(silent=True) or request.form
+        new_title = str(data.get("title", "")).strip()
+        genre = data.get("genre", track.genre)
+        if not new_title or len(new_title) > 200:
+            message = "Title is required." if not new_title else "Titles can be at most 200 characters."
+            if wants_json():
+                return jsonify({"error": message}), 400
+            return render_template("edit_track.html", track=track, genres=UPLOAD_GENRES, error=message)
         track.title = new_title
-        track.approved = False
-        db.session.commit()
-        return redirect(url_for("artist_dashboard"))
+        track.genre = genre if genre in UPLOAD_GENRES else track.genre
+        db.session.commit()  # stays published: edits don't need approval
+        if wants_json():
+            return jsonify({"track": track.to_dict()})
+        return redirect(url_for("artist_dashboard", tab="tracks"))
 
-    return render_template("edit_track.html", track=track, error=None)
+    return render_template("edit_track.html", track=track, genres=UPLOAD_GENRES, error=None)
 
 
-@app.route("/artist/delete/<int:track_id>")
+@app.route("/artist/delete/<int:track_id>", methods=["POST"])
 @login_required
 def delete_track(track_id):
-    if current_user.role != "artist":
-        return "Not authorized", 403
-    track = db.session.get(Track, track_id)
-    if not track:
-        return "Track not found", 404
-    if track.artist_id != current_user.id:
-        return "Not authorized - this isn't your track", 403
+    denied = artist_only()
+    if denied:
+        return denied
+    track, error = own_track_or_error(track_id)
+    if error:
+        return error
+
+    # Likes and play history point at the track; playlist links go with it via the relationship
+    Like.query.filter_by(track_id=track.id).delete()
+    PlayHistory.query.filter_by(track_id=track.id).delete()
+    audio_file = track.audio_file or ""
+    in_uploads = bool(audio_file) and track.stream_url == f"/static/uploads/{audio_file}"
     db.session.delete(track)
     db.session.commit()
-    return redirect(url_for("artist_dashboard"))
+    upload = Path(UPLOAD_FOLDER) / audio_file
+    if in_uploads and upload.is_file() and not Track.query.filter_by(audio_file=audio_file).count():
+        upload.unlink()
+    if wants_json():
+        return jsonify({"deleted": track_id})
+    return redirect(url_for("artist_dashboard", tab="tracks"))
 
 
 # ---------- ADMIN ----------
@@ -755,7 +988,23 @@ def compute_listening_streak(user_id):
 def profile():
     genre, tag = compute_user_tag(current_user.id)
     streak = compute_listening_streak(current_user.id)
-    return render_template("profile.html", genre=genre, tag=tag, streak=streak)
+    genre_counts = (UserPlayCount.query.filter_by(user_id=current_user.id)
+                    .order_by(UserPlayCount.play_count.desc()).all())
+    recent, seen = [], set()
+    for row in (PlayHistory.query.filter(PlayHistory.user_id == current_user.id, PlayHistory.track_id.isnot(None))
+                .order_by(PlayHistory.played_at.desc(), PlayHistory.id.desc()).limit(40)):
+        if row.track and row.track_id not in seen and row.track.stream_url:
+            recent.append(row.track.to_dict())
+            seen.add(row.track_id)
+        if len(recent) == 6:
+            break
+    stats = {
+        "total_plays": sum(r.play_count for r in genre_counts),
+        "playlists": Playlist.query.filter_by(user_id=current_user.id).count(),
+        "likes": Like.query.filter_by(user_id=current_user.id).count(),
+    }
+    return render_template("profile.html", genre=genre, tag=tag, streak=streak, stats=stats,
+                           genre_counts=[(r.genre, r.play_count) for r in genre_counts], recent=recent)
 
 
 @app.route("/tag/<username>")

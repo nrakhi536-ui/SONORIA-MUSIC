@@ -6,10 +6,15 @@ It streams 30-second song previews from the iTunes Search API and shows lyrics f
 ## Features
 - **Web player (`/`)**: Home, Explore, Library and Search views; mood filters; a persistent player
   with seek, volume, shuffle, repeat, a queue panel, a lyrics panel and a video/visualizer mode.
-- **JSON API**: iTunes search, home-page sections and lyrics lookup (see below).
-- **Accounts and roles**: signup, login and logout for customers, artists and admins.
-- **Artist tools**: upload tracks, edit tracks and view an artist dashboard.
-- **Admin tools**: dashboard, and approve or reject uploaded tracks.
+  Every track has a **⋯** menu (also on right-click and in the player) with **Add to queue**: queued songs
+  play after the current one, before the rest of the list, without interrupting playback.
+- **Likes**: guests' likes stay in the browser (`localStorage["guest_liked_songs"]`); signed-in users and
+  artists get their own likes on the server. Guest likes are never merged into an account.
+- **JSON API**: iTunes search, home-page sections, lyrics, likes, playlists and badges (see below).
+- **Accounts and roles**: signup, login and logout for users, artists and admins.
+- **Artist tools**: a dashboard with live stream counts, a performance chart, track management and
+  drag-and-drop uploads that **publish immediately** (no approval step); a public artist page.
+- **Admin tools**: dashboard, and review of any older unapproved uploads.
 
 ## Requirements
 - Python 3.9 or newer
@@ -47,7 +52,10 @@ You can open a view directly with a link like `/#library` or `/#explore`.
 | --- | --- |
 | `GET /api/search?q=<term>` | `{results: [track], error}`: up to 25 iTunes songs |
 | `GET /api/songs` | `{sections: {"Chill": [...], "Top Hits": [...], "Synthwave": [...]}}` for the home page |
-| `GET /api/lyrics?artist=<a>&title=<t>[&album=<al>&duration=<sec>]` | `{lines: [str], synced: [{time, text}] \| null, instrumental, error}`; 404 if no lyrics are found. `synced` is only set when LRCLIB's recording is within 4 s of `duration` |
+| `GET /api/lyrics?artist=<a>&title=<t>[&album=<al>&duration=<sec>]` or `?track_id=local-3` | `{lines: [str], synced: [{time, text}] \| null, instrumental, source, error}`; 404 if no lyrics are found. Catalogue tracks use their `.lrc` file first (`source: "local"`); otherwise LRCLIB `/api/get`, then a search. `synced` is only set when the recording is within 4 s of `duration` |
+| `GET /api/likes` | `{tracks: [track]}`: the signed-in account's liked songs, newest first |
+| `POST /api/likes` | Body `{track_id}` (`"local-3"` or an iTunes id; iTunes details are looked up server-side) |
+| `DELETE /api/likes/<track_id>` | Removes a like |
 | `GET /api/home_sections` | `{sections: [{key, title, tracks: [track]}]}` for the local catalogue: Trending Now, Viral on Reels & Shorts, Artists. Tracks come back in a new random order on every call |
 | `GET /api/playlists[?track_id=local-3]` | `{playlists: [{id, name, track_count, created_at, contains_track?}]}` for the signed-in user |
 | `POST /api/playlists` | Body `{name, track_id?}`: creates a playlist, optionally adding a track straight away |
@@ -56,7 +64,7 @@ You can open a view directly with a link like `/#library` or `/#explore`.
 | `POST /api/track/play` | Body `{track_id, genre?}`: records a play and returns `{recorded, badge}` |
 | `GET /api/user/badge` | `{badge: {badge, genre, plays, total_plays}}`, or `{badge: null}` before the first play |
 
-Playlist and badge endpoints need a signed-in user and return 401 JSON otherwise. `POST /api/track/play` also
+Playlist, like and badge endpoints need a signed-in user and return 401 JSON otherwise. `POST /api/track/play` also
 works for guests: it bumps catalogue play counts and returns `{recorded: false}`. Only Sonoria catalogue
 tracks (`local-*` ids) can go in playlists. Listener badges come from the user's most played genre, as mapped in
 [badges.py](badges.py).
@@ -79,6 +87,15 @@ loudness), plus one of four audio-reactive video visualizers: ring, bars, wave o
 gives the same looks. It also adds or updates the track in the database.
 Titles, artists and home-page sections come from the `CATALOG` table at the top of `generate_media.py`. Edit it
 and re-run to change them. In the SPA, switch the player to **Video** to see a track's Canvas loop.
+
+### Synced lyrics for the catalogue
+```bash
+python fetch_lyrics.py            # add --force to refetch
+```
+Saves timed LRC lyrics from LRCLIB to `instance/lyrics/<slug>.lrc` for every catalogue song whose recording
+matches (within 4 s), so synced lyrics work offline. The slug comes from the MP3 name, e.g. `perfect.lrc` or
+`challa-jab-tak-hai-jaan.lrc`. For a song LRCLIB doesn't have, drop your own `.lrc` file (lines like
+`[00:12.50] lyric text`) in that folder; local files always win. `instance/` isn't committed to git.
 
 ### Make yourself an admin
 Open `instance/app.db` in DB Browser for SQLite. In the Execute SQL tab, run:

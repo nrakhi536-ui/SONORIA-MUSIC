@@ -1,9 +1,122 @@
 {% extends "base.html" %}
+{% from "_icons.html" import svg_icon %}
+{% from "_tracks.html" import track_row, stat_card %}
+{% set active_nav = "dashboard" %}
+{% block title %}Artist Dashboard{% endblock %}
+
 {% block content %}
-<div class="row-title">My Tracks</div>
-<p><a href="/artist/upload" style="color:#e88fc0;">+ Upload a new track</a></p>
-{% for track in tracks %}
-  <p>{{ track.title }} — {% if track.approved %}<span style="color:#4ade80;">Approved</span>{% else %}<span style="color:#f0c896;">Pending</span>{% endif %}
-  | Plays: {{ track.play_count }} | <a href="/artist/edit/{{ track.id }}" style="color:#e88fc0;">Edit</a> | <a href="/artist/delete/{{ track.id }}" style="color:#ff8a8a;">Delete</a></p>
-{% else %}<p class="empty-msg">You haven't uploaded anything yet.</p>{% endfor %}
+<section class="pg-hero glass-card dash-hero">
+  <div class="hero-avatar" aria-hidden="true"><span>{{ current_user.username[0]|upper }}</span></div>
+  <div class="hero-meta">
+    <div class="hero-kind">{{ svg_icon("dashboard") }} Artist Dashboard</div>
+    <h1 class="hero-title">Welcome back, {{ current_user.username }}</h1>
+    <div class="hero-stats">Uploads publish instantly: no approval queue.</div>
+  </div>
+  <div class="hero-actions">
+    <a class="pill-btn ghost" href="/artist/{{ current_user.id }}">{{ svg_icon("mic") }} View public page</a>
+    <button type="button" class="pill-btn" data-goto-tab="upload">{{ svg_icon("upload") }} Upload</button>
+  </div>
+</section>
+
+<div class="stat-grid">
+  {{ stat_card("streams", "Total streams", stats.total_streams, live=True) }}
+  {{ stat_card("music", "Published tracks", stats.track_count) }}
+  {{ stat_card("trophy", "Top track", 0, text=stats.top_track or "—") }}
+  {{ stat_card("dashboard", "Avg. streams / track", stats.avg_streams) }}
+</div>
+
+<div class="tabs" data-tabs data-initial="{{ active_tab }}">
+  <div class="tab-list" role="tablist" aria-label="Dashboard">
+    <button type="button" role="tab" data-tab="overview">Performance</button>
+    <button type="button" role="tab" data-tab="tracks">Tracks <span class="tab-count">{{ tracks|length }}</span></button>
+    <button type="button" role="tab" data-tab="upload">Upload</button>
+  </div>
+
+  <!-- Performance: streams per track -->
+  <div class="tab-panel" role="tabpanel" data-panel="overview">
+    {% set by_streams = track_data|sort(attribute="play_count", reverse=True) %}
+    {% if by_streams %}
+      <div class="glass-card perf-card">
+        <h2 class="section-title perf-title">Streams by track</h2>
+        {% set top = by_streams[0].play_count or 1 %}
+        <div class="perf-chart">
+          {% for t in by_streams %}
+            {% set share = (100 * t.play_count / stats.total_streams)|round(1) if stats.total_streams else 0 %}
+            <button type="button" class="perf-row" data-play="{{ t.id }}" data-track-id="{{ t.id }}" style="--i: {{ loop.index0 }}"
+                    aria-label="{{ t.title }}: {{ t.play_count }} streams, {{ share }}% of your total">
+              <span class="perf-label">{{ t.title }}</span>
+              <span class="bar-track">
+                <span class="bar-fill" data-bar="{{ t.play_count }}" data-bar-max="{{ top }}"></span>
+              </span>
+              <span class="perf-value"><span data-streams="{{ t.id }}">{{ "{:,}".format(t.play_count) }}</span></span>
+              <span class="perf-tip" aria-hidden="true">{{ "{:,}".format(t.play_count) }} streams · {{ share }}% of total</span>
+            </button>
+          {% endfor %}
+        </div>
+        <p class="perf-hint">Hover a bar for details · click one to play it</p>
+      </div>
+      {% if stats.genres %}
+        <h2 class="section-title">Genre mix</h2>
+        <div class="bar-list">
+          {% for genre, n in stats.genres %}
+            <div class="bar-row" style="--i: {{ loop.index0 }}">
+              <span class="bar-label">{{ genre }}</span>
+              <span class="bar-track"><span class="bar-fill" data-bar="{{ n }}" data-bar-max="{{ stats.track_count }}"></span></span>
+              <span class="bar-value">{{ n }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% else %}
+      <div class="empty-state glass-card">
+        {{ svg_icon("upload") }}
+        <p>Upload your first track to start seeing streams here.</p>
+        <button type="button" class="pill-btn" data-goto-tab="upload">Upload a track</button>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- Tracks: manage what's live -->
+  <div class="tab-panel" role="tabpanel" data-panel="tracks" hidden>
+    {% if track_data %}
+      <ol class="trk-list manage">
+        {% for t in track_data %}{{ track_row(t, loop.index0, manage=True) }}{% endfor %}
+      </ol>
+    {% else %}
+      <p class="empty-msg">You haven't uploaded anything yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- Upload -->
+  <div class="tab-panel" role="tabpanel" data-panel="upload" hidden>
+    <form class="upload-form glass-card" id="upload-form" method="POST" action="/artist/upload" enctype="multipart/form-data" novalidate>
+      <label class="dropzone" id="dropzone">
+        <input type="file" name="audio_file" id="upload-file" accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/mp4">
+        {{ svg_icon("upload", "drop-icon") }}
+        <span class="drop-title" id="drop-title">Drop an audio file here, or click to choose</span>
+        <span class="drop-hint">MP3, WAV or M4A · up to 20 MB</span>
+      </label>
+      <div class="form-row">
+        <label class="field">
+          <span>Title</span>
+          <input type="text" name="title" id="upload-title" maxlength="200" placeholder="Track title" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Genre</span>
+          <select name="genre" id="upload-genre">
+            {% for g in genres %}<option value="{{ g }}"{% if g == "Other" %} selected{% endif %}>{{ g }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="upload-progress" id="upload-progress" hidden><span id="upload-bar"></span></div>
+      <p class="form-error" id="upload-error" role="alert">{{ request.args.get("error", "") }}</p>
+      <div class="form-actions">
+        <span class="form-note">Goes live the moment it finishes uploading.</span>
+        <button type="submit" class="pill-btn" id="upload-submit">{{ svg_icon("upload") }} Publish track</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script type="application/json" id="page-tracks">{{ track_data|tojson }}</script>
 {% endblock %}

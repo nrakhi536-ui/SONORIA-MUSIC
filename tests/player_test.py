@@ -177,7 +177,7 @@ def run(p, spa_url, shots, channel, headed):
     page.click("#heart-btn")
     check("heart likes current track",
           js(page, "document.getElementById('heart-btn').textContent") == "♥"
-          and js(page, "JSON.parse(localStorage.getItem('sonoria.likedTracks')).length") == 1
+          and js(page, "JSON.parse(localStorage.getItem('guest_liked_songs')).length") == 1
           and js(page, "document.getElementById('nav-liked-count').textContent") == "1")
 
     # ---------- Queue panel ----------

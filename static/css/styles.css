@@ -1483,6 +1483,98 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .share-btn.copied { color: var(--bg-primary); background: var(--highlight-warmth); border-color: var(--highlight-warmth); }
 
 /* =====================================================================
+   Track menu (⋯) and the user queue
+   ===================================================================== */
+.icon-btn svg.dots { fill: currentColor; stroke: none; }
+.more-btn[hidden] { display: none; }
+
+/* Cards: ⋯ top-right, the + playlist button beside it */
+.card .more-btn {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 2;
+  width: 32px;
+  height: 32px;
+  color: var(--text-primary);
+  background: rgba(11, 7, 17, 0.78);
+  border: 1px solid var(--border-strong);
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.card .add-btn { right: 56px; }
+.card:hover .more-btn,
+.card:focus-within .more-btn,
+.card .more-btn:focus-visible { opacity: 1; }
+.card .more-btn:hover { background: var(--bg-midnight); transform: scale(1.08); }
+@media (hover: none) { .card .more-btn { opacity: 1; } }
+
+.chart-row .more-btn,
+.library-table .more-btn { opacity: 0; }
+.chart-row:hover .more-btn,
+.chart-row:focus-within .more-btn,
+.library-table tr:hover .more-btn,
+.library-table tr:focus-within .more-btn { opacity: 1; }
+@media (hover: none) { .chart-row .more-btn, .library-table .more-btn { opacity: 1; } }
+.library-table .col-actions { width: 84px; white-space: nowrap; }
+.library-table .col-actions .icon-btn { display: inline-grid; }
+
+.track-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 220px;
+  padding: 6px;
+  border-radius: var(--radius-md);
+  background: rgba(20, 13, 33, 0.94);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(246, 219, 192, 0.12);
+  box-shadow: 0 0 0 1px var(--border-strong), 0 20px 50px rgba(0, 0, 0, 0.55);
+  animation: menu-in 0.14s ease;
+}
+.track-menu[hidden] { display: none; }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+.track-menu-head {
+  padding: 6px 10px 8px;
+  max-width: 260px;
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.track-menu [role=menuitem] {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  text-align: left;
+  color: var(--text-primary);
+}
+.track-menu [role=menuitem]:hover,
+.track-menu [role=menuitem]:focus-visible { background: var(--surface-raised); outline: none; }
+.track-menu svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--highlight-warmth);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.queue-user-label { display: flex; align-items: center; justify-content: space-between; }
+.queue-user-label[hidden] { display: none; }
+.queue-clear { font-size: var(--fs-tiny); font-weight: 600; color: var(--highlight-warmth); text-transform: none; letter-spacing: 0; }
+.queue-clear:hover { text-decoration: underline; }
+.queue-item.user-queued { box-shadow: inset 3px 0 0 var(--accent-secondary); }
+.queue-remove { width: 28px; height: 28px; font-size: 0.8rem; margin-left: auto; }
+
+/* =====================================================================
    Responsive
    ===================================================================== */
 @media (max-width: 1180px) {

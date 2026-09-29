@@ -1,10 +1,87 @@
 {% extends "base.html" %}
+{% from "_icons.html" import svg_icon %}
+{% from "_tracks.html" import track_row, stat_card %}
+{% set active_nav = "artist-page" if current_user.is_authenticated and current_user.id == artist.id else "" %}
+{% block title %}{{ artist.username }}{% endblock %}
+
 {% block content %}
-<div class="row-title">{{ artist.username }}</div>
-<div class="scroll-row" style="flex-wrap:wrap;">
-{% for track in tracks %}
-  <div class="card"><div class="art">🎵</div><div class="title">{{ track.title }}</div>
-  {% if track.audio_file %}<audio controls src="{{ track.audio_file }}"></audio>{% endif %}</div>
-{% else %}<span class="empty-msg">No approved tracks yet.</span>{% endfor %}
+{% set hero_cover = (playable[0].cover if playable else none) %}
+<section class="pg-hero glass-card"{% if hero_cover %} style="--hero-cover: url('{{ hero_cover }}')"{% endif %}>
+  <div class="hero-avatar" aria-hidden="true"><span>{{ artist.username[0]|upper }}</span></div>
+  <div class="hero-meta">
+    <div class="hero-kind">{{ svg_icon("mic") }} Artist</div>
+    <h1 class="hero-title">{{ artist.username }}</h1>
+    <div class="hero-stats">
+      <span><strong data-count="{{ stats.total_streams }}" data-live-total>{{ "{:,}".format(stats.total_streams) }}</strong> streams</span>
+      <span>·</span>
+      <span><strong>{{ stats.track_count }}</strong> track{{ 's' if stats.track_count != 1 }}</span>
+    </div>
+  </div>
+</section>
+
+<div class="action-bar">
+  <button type="button" class="hero-play" data-play-all {% if not playable %}disabled{% endif %} aria-label="Play {{ artist.username }}">
+    {{ svg_icon("play") }}
+  </button>
+  {% if current_user.is_authenticated and current_user.id == artist.id %}
+    <a class="pill-btn ghost" href="/artist/dashboard">{{ svg_icon("dashboard") }} Open dashboard</a>
+  {% endif %}
 </div>
+
+<div class="tabs" data-tabs>
+  <div class="tab-list" role="tablist" aria-label="{{ artist.username }}">
+    <button type="button" role="tab" data-tab="popular">Popular</button>
+    <button type="button" role="tab" data-tab="releases">Releases</button>
+    <button type="button" role="tab" data-tab="stats">Stats</button>
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="popular">
+    {% if playable %}
+      <ol class="trk-list">
+        {% for t in playable %}{{ track_row(t, loop.index0) }}{% endfor %}
+      </ol>
+    {% else %}
+      <p class="empty-msg">No published tracks yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="releases" hidden>
+    <div class="release-grid">
+      {% for t in playable %}
+        <button type="button" class="release glass-card" data-play="{{ t.id }}" data-track-id="{{ t.id }}" style="--i: {{ loop.index0 }}">
+          <span class="release-cover"{% if t.cover %} style="background-image: url('{{ t.cover }}')"{% endif %}>
+            <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+          </span>
+          <span class="release-title">{{ t.title }}</span>
+          <span class="release-sub">{{ t.genre or "Other" }} · <span data-streams="{{ t.id }}">{{ "{:,}".format(t.play_count) }}</span> streams</span>
+        </button>
+      {% else %}
+        <p class="empty-msg">No releases yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="stats" hidden>
+    <div class="stat-grid">
+      {{ stat_card("streams", "Total streams", stats.total_streams) }}
+      {{ stat_card("music", "Tracks", stats.track_count) }}
+      {{ stat_card("trophy", "Top track", 0, text=stats.top_track or "—") }}
+      {{ stat_card("dashboard", "Avg. streams / track", stats.avg_streams) }}
+    </div>
+    {% if stats.genres %}
+      <h2 class="section-title">Sound</h2>
+      <div class="bar-list">
+        {% for genre, n in stats.genres %}
+          <div class="bar-row" style="--i: {{ loop.index0 }}">
+            <span class="bar-label">{{ genre }}</span>
+            <span class="bar-track"><span class="bar-fill" data-bar="{{ n }}" data-bar-max="{{ stats.track_count }}"></span></span>
+            <span class="bar-value">{{ n }} track{{ 's' if n != 1 }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<script type="application/json" id="page-tracks">{{ playable|tojson }}</script>
 {% endblock %}

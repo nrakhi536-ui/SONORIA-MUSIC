@@ -1,0 +1,48 @@
+{#- Track rows shared by the artist page, artist dashboard and profile.
+    `t` is a Track.to_dict() dict; pages.js plays rows by data-track-id and keeps the stream counts live. -#}
+{% from "_icons.html" import svg_icon %}
+
+{% macro duration(ms) -%}
+{%- if ms %}{% set secs = (ms / 1000)|int %}{{ secs // 60 }}:{{ '%02d' % (secs % 60) }}{% else %}—{% endif -%}
+{%- endmacro %}
+
+{% macro track_row(t, i, manage=False) -%}
+<li class="trk" data-track-id="{{ t.id }}" style="--i: {{ i }}">
+  <button type="button" class="trk-play" data-play="{{ t.id }}" aria-label="Play {{ t.title }}"
+          {% if not t.stream_url %}disabled title="This upload has no playable audio"{% endif %}>
+    <span class="trk-num">{{ i + 1 }}</span>
+    {{ svg_icon("play", "trk-play-icon") }}
+    <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+  </button>
+  <span class="trk-cover"{% if t.cover %} style="background-image: url('{{ t.cover }}')"{% endif %}></span>
+  <div class="trk-meta">
+    <div class="t">{{ t.title }}</div>
+    <div class="a">{{ t.genre or "Other" }}</div>
+  </div>
+  <div class="trk-streams" title="Streams">
+    {{ svg_icon("streams") }}<span data-streams="{{ t.id }}">{{ "{:,}".format(t.play_count) }}</span>
+  </div>
+  <div class="trk-dur">{{ duration(t.duration) }}</div>
+  {% if manage %}
+    <span class="status-pill live">Live</span>
+    <div class="trk-actions">
+      <a class="icon-btn" href="/artist/edit/{{ t.id|replace('local-', '') }}" aria-label="Edit {{ t.title }}" title="Edit">{{ svg_icon("edit") }}</a>
+      <form method="POST" action="/artist/delete/{{ t.id|replace('local-', '') }}" data-confirm="Delete “{{ t.title }}”? Its streams, likes and playlist spots go with it.">
+        <button type="submit" class="icon-btn danger" aria-label="Delete {{ t.title }}" title="Delete">{{ svg_icon("trash") }}</button>
+      </form>
+    </div>
+  {% endif %}
+</li>
+{%- endmacro %}
+
+{% macro stat_card(icon, label, value, suffix="", text=None, live=False) -%}
+<div class="stat-card glass-card">
+  <span class="stat-icon">{{ svg_icon(icon) }}</span>
+  <div class="stat-label">{{ label }}</div>
+  {% if text is not none %}
+    <div class="stat-value stat-text" title="{{ text }}">{{ text }}</div>
+  {% else %}
+    <div class="stat-value"><span data-count="{{ value }}"{% if live %} data-live-total{% endif %}>{{ "{:,}".format(value) if value is integer else value }}</span>{{ suffix }}</div>
+  {% endif %}
+</div>
+{%- endmacro %}

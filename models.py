@@ -62,12 +62,14 @@ class Track(db.Model):
             "id": f"local-{self.id}",
             "title": self.title,
             "artist": self.artist.username,
+            "artist_id": self.artist_id,
             "album": self.album,
             "cover": media_url(self.cover),
             "stream_url": media_url(self.stream_url),
             "video_url": media_url(self.video_url),
             "duration": self.duration_ms,
             "genre": self.genre,
+            "play_count": self.play_count or 0,
             "section": self.section,
             "local": True,
         }
@@ -143,6 +145,35 @@ def upgrade_schema():
         with db.engine.begin() as conn:
             for statement in statements:
                 conn.execute(db.text(statement))
+    rebuild_relaxed_tables()
+
+
+def rebuild_relaxed_tables():
+    """Recreates tables where a column is NOT NULL in the database but nullable in the model.
+
+    SQLite can't drop a NOT NULL constraint in place. like.track_id and play_history.track_id were
+    created NOT NULL before likes/plays of iTunes songs (external_id) existed, which made those rows
+    impossible to insert. The table is renamed, recreated from the model and the rows copied back.
+    """
+    inspector = db.inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+    for table in db.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        columns = {col["name"]: col for col in inspector.get_columns(table.name)}
+        stale = [c.name for c in table.columns if c.nullable and c.name in columns and not columns[c.name]["nullable"]]
+        if not stale:
+            continue
+        shared = ", ".join(f'"{name}"' for name in columns if name in table.columns)
+        old_name = f"{table.name}__old"
+        old_indexes = [index["name"] for index in inspector.get_indexes(table.name)]
+        with db.engine.begin() as conn:
+            conn.execute(db.text(f'ALTER TABLE "{table.name}" RENAME TO "{old_name}"'))
+            for name in old_indexes:  # they move with the renamed table and would clash with the new ones
+                conn.execute(db.text(f'DROP INDEX IF EXISTS "{name}"'))
+            table.create(conn)
+            conn.execute(db.text(f'INSERT INTO "{table.name}" ({shared}) SELECT {shared} FROM "{old_name}"'))
+            conn.execute(db.text(f'DROP TABLE "{old_name}"'))
 
 
 class ExternalTrack(db.Model):
@@ -206,7 +237,10 @@ class PlayHistory(db.Model):
 
 
 class Like(db.Model):
-    """A customer 'liking' a track - powers the Library / Liked Songs page."""
+    """A signed-in user (listener or artist) liking a track - powers Liked Songs.
+
+    Guests' likes never come here; they stay in the browser's localStorage.
+    """
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     track_id = db.Column(db.Integer, db.ForeignKey("track.id"), nullable=True)

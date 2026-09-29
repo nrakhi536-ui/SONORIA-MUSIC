@@ -3,7 +3,8 @@
 // =====================================================================
 
 // ===== Global State Manager =====
-const LIKED_STORAGE_KEY = "sonoria.likedTracks";
+const GUEST_LIKES_KEY = "guest_liked_songs";     // guests only; never merged into an account
+const LEGACY_LIKES_KEY = "sonoria.likedTracks";   // pre-accounts key, migrated once to the guest key
 const PLAYER_STORAGE_KEY = "sonoria.player";
 
 const savedPlayer = readJSON(PLAYER_STORAGE_KEY, {});
@@ -17,7 +18,7 @@ const state = {
   repeat: !!savedPlayer.repeat,   // repeat-one: loop the current track
   mode: "audio",        // "audio" | "video" (visualizer stage)
   panel: null,          // null | "queue" | "lyrics"
-  liked: loadLiked(),   // Map<trackId, track>, in the order they were liked
+  liked: new Map(),     // Map<trackId, track>, in the order they were liked (see loadLiked)
   lyricsCache: new Map(),
   currentView: "home",
   homeLoaded: false,    // iTunes-backed home rows
@@ -30,9 +31,12 @@ const state = {
   loadSeq: 0,           // bumps on every track load, so each load records at most one play
   recordedSeq: 0,
   errorStreak: 0,       // consecutive load failures, to stop auto-skip cascades
+  userQueue: [],        // "Add to queue" tracks: they play next, before the list continues
+  queuedTrack: null,    // the user-queue track playing right now (the list position stays put)
 };
 
 function currentTrack() {
+  if (state.queuedTrack) return state.queuedTrack;
   return state.pos >= 0 ? state.queue[state.order[state.pos]] || null : null;
 }
 
@@ -59,6 +63,10 @@ const LYRIC_LEAD_SECONDS = 0.2;      // light a line up just before it is sung
 const LYRIC_MANUAL_SCROLL_MS = 4000; // after the user scrolls the lyrics, leave them be this long
 const SHARE_MAX_CHARS = 400;
 const EQ_MARKUP = '<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>';
+const DOTS_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" class="dots"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
+const QUEUE_ADD_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="3" y1="6" x2="15" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><line x1="3" y1="18" x2="11" y2="18"/><line x1="18" y1="13" x2="18" y2="21"/><line x1="14" y1="17" x2="22" y2="17"/></svg>';
+const HEART_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 1 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8z"/></svg>';
+const ARTIST_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>';
 const PLUS_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 
 const audio = document.getElementById("audio-player");
@@ -87,6 +95,7 @@ const sidePanel = $("side-panel");
 const stage = $("stage");
 const canvasVideo = $("canvas-video");
 const playerAddBtn = $("player-add-btn");
+const playerMoreBtn = $("player-more-btn");
 const playlistModal = $("playlist-modal");
 const genreBadge = $("genre-badge"); // only rendered for signed-in users
 const shareModal = $("share-modal");
@@ -167,24 +176,77 @@ function showToast(message, { tone = "info", duration = 3500 } = {}) {
   }, duration);
 }
 
-// ===== Liked songs (kept in localStorage until the backend can store iTunes likes) =====
-function loadLiked() {
-  const saved = readJSON(LIKED_STORAGE_KEY, []);
-  return new Map((Array.isArray(saved) ? saved : []).map((t) => [t.id, t]));
+// ===== Liked songs =====
+// Guests: localStorage "guest_liked_songs". Signed-in users and artists: the server (/api/likes).
+// The two never mix: an account never reads the guest list, so guest likes can't bleed into it.
+function loadGuestLikes() {
+  let saved = readJSON(GUEST_LIKES_KEY, null);
+  const legacy = readJSON(LEGACY_LIKES_KEY, null);
+  if (saved === null && Array.isArray(legacy)) {
+    saved = legacy; // older builds kept everyone's likes under one key on this device
+    writeJSON(GUEST_LIKES_KEY, saved);
+  }
+  return Array.isArray(saved) ? saved : [];
 }
 
-function toggleLike(track) {
-  const nowLiked = !state.liked.has(track.id);
-  if (nowLiked) {
-    state.liked.set(track.id, track);
+async function loadLiked() {
+  try { localStorage.removeItem(LEGACY_LIKES_KEY); } catch { /* storage blocked */ }
+  if (!state.signedIn) {
+    state.liked = new Map(loadGuestLikes().map((t) => [t.id, t]));
   } else {
-    state.liked.delete(track.id);
+    try {
+      const resp = await fetch("/api/likes");
+      if (!resp.ok) throw new Error(String(resp.status));
+      const { tracks } = await resp.json();
+      state.liked = new Map(tracks.slice().reverse().map((t) => [t.id, t])); // API is newest first
+    } catch {
+      showToast("Couldn't load your liked songs right now.", { tone: "error" });
+    }
   }
-  writeJSON(LIKED_STORAGE_KEY, [...state.liked.values()]);
-  showToast(nowLiked ? "Added to Liked Songs" : "Removed from Liked Songs", { duration: 2000 });
   updateHeart();
   updateLikedCount();
   if (state.currentView === "library") renderLibrary();
+}
+
+function saveGuestLikes() {
+  writeJSON(GUEST_LIKES_KEY, [...state.liked.values()]);
+}
+
+function refreshLikeViews() {
+  updateHeart();
+  updateLikedCount();
+  if (state.currentView === "library") renderLibrary();
+}
+
+async function toggleLike(track) {
+  const nowLiked = !state.liked.has(track.id);
+  // Optimistic: flip it now, undo if the server says no
+  if (nowLiked) state.liked.set(track.id, track);
+  else state.liked.delete(track.id);
+  refreshLikeViews();
+
+  if (!state.signedIn) {
+    saveGuestLikes();
+    showToast(nowLiked ? "Added to Liked Songs" : "Removed from Liked Songs", { duration: 2000 });
+    return;
+  }
+  try {
+    const resp = nowLiked
+      ? await fetch("/api/likes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ track_id: track.id }),
+      })
+      : await fetch(`/api/likes/${encodeURIComponent(track.id)}`, { method: "DELETE" });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || "Couldn't update your likes.");
+    showToast(nowLiked ? "Added to Liked Songs" : "Removed from Liked Songs", { duration: 2000 });
+  } catch (err) {
+    if (nowLiked) state.liked.delete(track.id);
+    else state.liked.set(track.id, track);
+    refreshLikeViews();
+    showToast(err.message, { tone: "error" });
+  }
 }
 
 function likedTracks() {
@@ -208,6 +270,22 @@ function addToPlaylistButton(track) {
   return btn;
 }
 
+// "⋯" button that opens the track menu (Add to queue, Add to playlist, Like, Go to artist)
+function moreButton(track) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "icon-btn more-btn";
+  btn.title = "More options";
+  btn.setAttribute("aria-label", `More options for “${track.title || "track"}”`);
+  btn.setAttribute("aria-haspopup", "menu");
+  btn.innerHTML = DOTS_SVG;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openTrackMenu(track, { anchor: btn });
+  });
+  return btn;
+}
+
 // Every renderer takes the list the item belongs to so a click queues that exact list.
 function renderCard(track, list, index) {
   const div = document.createElement("div");
@@ -222,6 +300,7 @@ function renderCard(track, list, index) {
   setCover(div.querySelector(".cover"), track.cover);
   const addBtn = addToPlaylistButton(track);
   if (addBtn) div.appendChild(addBtn);
+  div.appendChild(moreButton(track));
   bindPlay(div, list, index);
   return div;
 }
@@ -269,6 +348,7 @@ function renderChartRow(track, list, index) {
   `;
   const addBtn = addToPlaylistButton(track);
   if (addBtn) div.querySelector(".duration").before(addBtn);
+  div.querySelector(".duration").before(moreButton(track));
   setCover(div.querySelector(".mini-cover"), track.cover);
   bindPlay(div, list, index);
   return div;
@@ -295,6 +375,7 @@ function renderLibraryRow(track, list, index) {
   `;
   const addBtn = addToPlaylistButton(track);
   if (addBtn) tr.querySelector(".col-actions").appendChild(addBtn);
+  tr.querySelector(".col-actions").appendChild(moreButton(track));
   setCover(tr.querySelector(".mini-cover"), track.cover);
   bindPlay(tr, list, index);
   return tr;
@@ -326,6 +407,10 @@ function renderQueueItem(track, onClick) {
 function bindPlay(el, list, index) {
   el.addEventListener("click", (e) => {
     if (!e.target.closest("button")) playTrack(list, index);
+  });
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openTrackMenu(list[index], { x: e.clientX, y: e.clientY });
   });
   el.addEventListener("keydown", (e) => {
     if (e.target !== el) return; // a nested button handles its own keys
@@ -372,9 +457,25 @@ function playTrack(list, index) {
     return;
   }
   state.queue = list.slice();
+  state.queuedTrack = null;
   buildOrder(index);
   state.errorStreak = 0;
   loadCurrent();
+}
+
+// "Add to queue": plays after the current song, before the rest of the list; never interrupts playback
+function addToQueue(track) {
+  if (!track?.stream_url) {
+    showToast(`No preview available for “${track?.title || "this track"}”.`, { tone: "warn" });
+    return;
+  }
+  if (!currentTrack()) {
+    playTrack([track], 0); // nothing playing: start it straight away
+    return;
+  }
+  state.userQueue.push(track);
+  showToast(`Added “${track.title}” to the queue`, { duration: 2000 });
+  if (state.panel === "queue") renderQueue();
 }
 
 function loadCurrent() {
@@ -415,7 +516,15 @@ function stepTo(direction) {
 
 function playNext({ auto = false } = {}) {
   if (!currentTrack()) return;
+  if (state.userQueue.length) {
+    state.queuedTrack = state.userQueue.shift();
+    loadCurrent();
+    return;
+  }
+  const wasQueued = state.queuedTrack;
+  state.queuedTrack = null; // the list picks up where it left off
   if (stepTo(1)) return;
+  state.queuedTrack = wasQueued; // nothing left: stay on the song that just played
   if (auto) {
     // Finished the queue: park at the start of the last track, ready to replay
     audio.pause();
@@ -428,9 +537,16 @@ function playNext({ auto = false } = {}) {
 function playPrev() {
   if (!currentTrack()) return;
   // Restart the current track if we're more than a few seconds in, like most players
-  if (audio.currentTime > 3 || !stepTo(-1)) {
+  if (audio.currentTime > 3) {
     audio.currentTime = 0;
+    return;
   }
+  if (state.queuedTrack) {
+    state.queuedTrack = null; // back to the list's song
+    loadCurrent();
+    return;
+  }
+  if (!stepTo(-1)) audio.currentTime = 0;
 }
 
 function togglePlayPause() {
@@ -472,6 +588,7 @@ function updateNowPlayingUI() {
   npArtist.textContent = t.artist || "";
   document.title = `${t.title} · ${t.artist} — Sonoria`;
   playerAddBtn.hidden = !t.local;
+  playerMoreBtn.hidden = false;
   updateHeart();
   updateStage();
   updateMediaSession();
@@ -644,7 +761,7 @@ audio.addEventListener("error", () => {
   syncCanvas();
 
   state.errorStreak += 1;
-  const canSkip = state.errorStreak < MAX_AUTO_SKIPS && state.pos < state.order.length - 1;
+  const canSkip = state.errorStreak < MAX_AUTO_SKIPS && (state.userQueue.length > 0 || state.pos < state.order.length - 1);
   showToast(
     (track.local ? `Couldn't load “${track.title}”.` : `Couldn't load the preview for “${track.title}”.`) +
       (canSkip ? " Skipping ahead…" : ""),
@@ -818,12 +935,41 @@ function renderQueue() {
   now.innerHTML = "";
   next.innerHTML = "";
 
+  const userBox = $("queue-user");
+  const userLabel = $("queue-user-label");
+  userBox.innerHTML = "";
+  userLabel.hidden = !state.userQueue.length;
+
   if (!current) {
     showMessage(now, "Nothing playing yet.");
     $("queue-next-label").hidden = true;
     return;
   }
   now.appendChild(renderQueueItem(current));
+
+  $("queue-user-count").textContent = `(${state.userQueue.length})`;
+  state.userQueue.forEach((track, i) => {
+    const item = renderQueueItem(track, () => {
+      state.queuedTrack = track;
+      state.userQueue.splice(0, i + 1);
+      state.errorStreak = 0;
+      loadCurrent();
+    });
+    item.classList.add("user-queued");
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-btn queue-remove";
+    remove.setAttribute("aria-label", `Remove “${track.title}” from the queue`);
+    remove.title = "Remove from queue";
+    remove.textContent = "✕";
+    remove.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.userQueue.splice(i, 1);
+      renderQueue();
+    });
+    item.appendChild(remove);
+    userBox.appendChild(item);
+  });
 
   const upcoming = state.order.slice(state.pos + 1);
   const label = $("queue-next-label");
@@ -837,6 +983,7 @@ function renderQueue() {
     const targetPos = state.pos + 1 + offset;
     next.appendChild(renderQueueItem(state.queue[queueIndex], () => {
       state.pos = targetPos;
+      state.queuedTrack = null;
       state.errorStreak = 0;
       loadCurrent();
     }));
@@ -907,6 +1054,7 @@ async function loadLyrics() {
   const params = new URLSearchParams({ artist: t.artist || "", title: t.title || "" });
   if (t.album) params.set("album", t.album);
   if (t.duration) params.set("duration", String(Math.round(t.duration / 1000)));
+  if (t.local) params.set("track_id", t.id);
 
   try {
     const resp = await fetch(`/api/lyrics?${params}`);
@@ -1593,6 +1741,119 @@ playerAddBtn.addEventListener("click", () => {
   if (t) openPlaylistModal(t);
 });
 
+// ===== Track menu (⋯ buttons, right-click, player) =====
+const trackMenu = document.createElement("div");
+trackMenu.className = "track-menu";
+trackMenu.setAttribute("role", "menu");
+trackMenu.hidden = true;
+document.body.appendChild(trackMenu);
+let trackMenuReturnFocus = null;
+let trackMenuAnchor = null;   // the ⋯ button it hangs from (null for right-click menus)
+let trackMenuOpenedAt = 0;
+
+function trackMenuItems(track) {
+  const items = [
+    { label: "Add to queue", icon: QUEUE_ADD_SVG, run: () => addToQueue(track) },
+  ];
+  if (track.local) items.push({ label: "Add to playlist", icon: PLUS_SVG, run: () => openPlaylistModal(track) });
+  items.push({
+    label: state.liked.has(track.id) ? "Remove from Liked Songs" : "Add to Liked Songs",
+    icon: HEART_SVG,
+    run: () => toggleLike(track),
+  });
+  if (track.local && track.artist_id) {
+    items.push({ label: "Go to artist", icon: ARTIST_SVG, run: () => location.assign(`/artist/${track.artist_id}`) });
+  }
+  return items;
+}
+
+function openTrackMenu(track, { anchor = null, x = 0, y = 0 } = {}) {
+  if (!track) return;
+  trackMenu.innerHTML = `<div class="track-menu-head">${escapeHtml(track.title || "Untitled")}</div>`;
+  trackMenuItems(track).forEach((item) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("role", "menuitem");
+    btn.innerHTML = `${item.icon}<span>${escapeHtml(item.label)}</span>`;
+    btn.addEventListener("click", () => {
+      closeTrackMenu();
+      item.run();
+    });
+    trackMenu.appendChild(btn);
+  });
+
+  trackMenu.hidden = false;
+  trackMenuReturnFocus = anchor || document.activeElement;
+  trackMenuAnchor = anchor;
+  trackMenuOpenedAt = performance.now();
+  positionTrackMenu(x, y);
+  trackMenu.querySelector("[role=menuitem]").focus({ preventScroll: true });
+}
+
+function positionTrackMenu(x = 0, y = 0) {
+  const menuRect = trackMenu.getBoundingClientRect();
+  if (trackMenuAnchor) {
+    const r = trackMenuAnchor.getBoundingClientRect();
+    x = r.right - menuRect.width;
+    y = r.bottom + 6;
+    if (y + menuRect.height > window.innerHeight - 8) y = r.top - menuRect.height - 6; // flip above
+  }
+  trackMenu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menuRect.width - 8))}px`;
+  trackMenu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menuRect.height - 8))}px`;
+}
+
+// Scrolling keeps a ⋯ menu pinned to its button until the button leaves the screen;
+// a right-click menu closes, except for scroll-snap settling right after it opened.
+function onScrollWithMenu() {
+  if (trackMenu.hidden) return;
+  if (trackMenuAnchor) {
+    const r = trackMenuAnchor.getBoundingClientRect();
+    const visible = trackMenuAnchor.isConnected && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
+    if (visible) positionTrackMenu();
+    else closeTrackMenu({ restoreFocus: false });
+  } else if (performance.now() - trackMenuOpenedAt > 250) {
+    closeTrackMenu({ restoreFocus: false });
+  }
+}
+
+function closeTrackMenu({ restoreFocus = true } = {}) {
+  if (trackMenu.hidden) return;
+  trackMenu.hidden = true;
+  if (restoreFocus && trackMenuReturnFocus?.isConnected) trackMenuReturnFocus.focus();
+}
+
+trackMenu.addEventListener("keydown", (e) => {
+  const items = [...trackMenu.querySelectorAll("[role=menuitem]")];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    closeTrackMenu();
+  } else if (e.key === "Tab") {
+    closeTrackMenu({ restoreFocus: false });
+  }
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!trackMenu.hidden && !trackMenu.contains(e.target) && !e.target.closest(".more-btn")) {
+    closeTrackMenu({ restoreFocus: false });
+  }
+});
+["resize", "blur"].forEach((type) => window.addEventListener(type, () => closeTrackMenu({ restoreFocus: false })));
+document.addEventListener("scroll", onScrollWithMenu, true);
+
+playerMoreBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const t = currentTrack();
+  if (t) openTrackMenu(t, { anchor: playerMoreBtn });
+});
+$("queue-clear").addEventListener("click", () => {
+  state.userQueue = [];
+  renderQueue();
+});
+
 // ===== Init =====
 if (typeof savedPlayer.volume === "number") {
   audio.volume = Math.min(1, Math.max(0, savedPlayer.volume));
@@ -1603,7 +1864,7 @@ audio.loop = state.repeat;
 updateVolumeUI();
 updateModeButtons();
 updatePlayButton();
-updateLikedCount();
+loadLiked();
 buildStageBars();
 renderExplore();
 

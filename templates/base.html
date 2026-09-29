@@ -1,147 +1,86 @@
-<!DOCTYPE html>
-<html>
+{% from "_icons.html" import nav_icon, svg_icon, account_links %}<!DOCTYPE html>
+<html lang="en">
 <head>
-  <title>{% block title %}Sonoria{% endblock %}</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0; font-family: 'Segoe UI', Arial, sans-serif;
-      background: linear-gradient(160deg, #2b1730 0%, #1c0f24 100%);
-      color: #f3e9f7; display: flex; min-height: 100vh;
-    }
-    a { text-decoration: none; color: inherit; }
-
-    /* Sidebar */
-    .sidebar {
-      width: 220px; background: rgba(0,0,0,0.25); padding: 24px 16px;
-      display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
-    }
-    .logo { font-size: 22px; font-weight: bold; margin-bottom: 24px; }
-    .logo .accent { color: #e88fc0; }
-    .nav-link {
-      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-      border-radius: 10px; color: #d8c5df; font-size: 15px;
-    }
-    .nav-link.active, .nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
-    .sidebar hr { border-color: rgba(255,255,255,0.1); margin: 16px 0; }
-    .sidebar-label { font-size: 12px; color: #9c86a8; margin: 8px 0 4px 12px; text-transform: uppercase; }
-
-    /* Main area */
-    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-    .topbar {
-      display: flex; align-items: center; gap: 16px; padding: 20px 28px;
-    }
-    .search-box {
-      flex: 1; background: rgba(255,255,255,0.08); border-radius: 24px;
-      padding: 10px 18px; display: flex; align-items: center; gap: 8px;
-    }
-    .search-box input {
-      background: none; border: none; outline: none; color: #fff; font-size: 14px; flex: 1;
-    }
-    .search-box input::placeholder { color: #b8a3c2; }
-    .topbar .user-chip { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #d8c5df; }
-
-    .content { flex: 1; padding: 0 28px 120px 28px; overflow-y: auto; }
-
-    /* Cards / rows */
-    .row-title { font-size: 20px; font-weight: bold; margin: 24px 0 12px 0; }
-    .scroll-row { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 8px; }
-    .card {
-      flex: 0 0 auto; width: 170px; background: rgba(255,255,255,0.06);
-      border-radius: 12px; padding: 12px; position: relative; overflow: hidden;
-    }
-    .art {
-      width: 100%; height: 110px; border-radius: 8px; margin-bottom: 10px;
-      background: linear-gradient(135deg, #e88fc0, #7a5fc4);
-      display: flex; align-items: center; justify-content: center; font-size: 28px;
-    }
-    .card .title { font-weight: 600; font-size: 14px; }
-    .card .subtitle { font-size: 12px; color: #b8a3c2; margin-bottom: 8px; }
-    .card audio { width: 100%; height: 32px; }
-    .like-btn { background: none; border: none; cursor: pointer; font-size: 16px; color: #e88fc0; }
-    .empty-msg { color: #9c86a8; font-style: italic; }
-
-    /* Canvas visual */
-    .canvas-visual {
-      position: absolute; top: 0; left: 0; right: 0; height: 50px;
-      background: linear-gradient(270deg, #e88fc0, #7a5fc4, #4ade80, #e88fc0);
-      background-size: 400% 400%; opacity: 0.2; animation: canvasMove 6s ease infinite;
-      animation-play-state: paused; z-index: 0;
-    }
-    .canvas-visual.playing { animation-play-state: running; opacity: 0.5; }
-    @keyframes canvasMove { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
-    .card > *:not(.canvas-visual) { position: relative; z-index: 1; }
-
-    /* Player bar */
-    .player-bar {
-      position: fixed; bottom: 0; left: 0; right: 0; height: 76px;
-      background: rgba(10,5,15,0.95); border-top: 1px solid rgba(255,255,255,0.08);
-      display: flex; align-items: center; padding: 0 24px; gap: 20px; backdrop-filter: blur(6px);
-    }
-    .player-bar .np-art { width: 46px; height: 46px; border-radius: 6px; background: linear-gradient(135deg,#e88fc0,#7a5fc4); }
-    .player-bar .np-info { min-width: 140px; }
-    .player-bar .np-title { font-weight: 600; font-size: 14px; }
-    .player-bar .np-artist { font-size: 12px; color: #b8a3c2; }
-  </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Sonoria{% endblock %} · Sonoria</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23502D55'/%3E%3Cpath d='M12 22V10l10-2v12' fill='none' stroke='%23F6DBC0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='10' cy='22' r='3' fill='%23F6DBC0'/%3E%3Ccircle cx='20' cy='20' r='3' fill='%23F6DBC0'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages.css') }}">
 </head>
-<body>
+<body class="page-body" data-signed-in="{{ 'true' if current_user.is_authenticated else 'false' }}">
+  <div class="page-shell">
 
-  <div class="sidebar">
-    <div class="logo">Sonoria <span class="accent">•</span></div>
-    <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">🏠 Home</a>
-    <a class="nav-link" href="/search">🧭 Explore</a>
-    <a class="nav-link {% if request.path == '/library' %}active{% endif %}" href="/library">📚 Library</a>
-    <hr>
-    {% if current_user.is_authenticated %}
-      <div class="sidebar-label">Account</div>
-      <a class="nav-link" href="/profile">👤 Profile</a>
-      {% if current_user.role == 'artist' %}
-        <a class="nav-link" href="/artist/dashboard">🎤 Artist Dashboard</a>
-      {% endif %}
-      {% if current_user.role == 'admin' %}
-        <a class="nav-link" href="/admin/dashboard">🛠 Admin Dashboard</a>
-      {% endif %}
-      <a class="nav-link" href="/logout">🚪 Sign Out</a>
-    {% endif %}
+    <!-- Same sidebar, icons and links as the web player -->
+    <nav class="sidebar" aria-label="Main navigation">
+      <a class="brand" href="/">Sonoria <span class="accent">•</span></a>
+      <a class="nav-link" href="/#home">{{ nav_icon("home") }} Home</a>
+      <a class="nav-link" href="/#explore">{{ nav_icon("explore") }} Explore</a>
+      <a class="nav-link" href="/#library">{{ nav_icon("library") }} Library</a>
+      <hr>
+      {{ account_links(current_user, role_label, active_nav|default("")) }}
+    </nav>
+
+    <main class="page-main">
+      <header class="topbar">
+        <form class="search-box" method="GET" action="/search" role="search">
+          {{ svg_icon("search", "search-icon") }}
+          <input type="search" name="q" placeholder="Search Songs, Albums, Artists..." aria-label="Search music">
+        </form>
+        <div class="user-cluster">
+          {% if current_user.is_authenticated %}
+            <span class="user-name">{{ current_user.username }}</span>
+            <span class="role-pill">{{ role_label(current_user.role) }}</span>
+            <div class="avatar-badge" title="{{ current_user.username }}">{{ current_user.username[0]|upper }}</div>
+          {% else %}
+            <a class="pill-btn ghost" href="/login">Log in</a>
+            <a class="pill-btn" href="/signup">Sign up</a>
+          {% endif %}
+        </div>
+      </header>
+
+      <div class="page-content">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
   </div>
 
-  <div class="main">
-    <div class="topbar">
-      <form class="search-box" method="GET" action="/search">
-        <span>🔍</span>
-        <input type="text" name="q" placeholder="Search Songs, Albums, Artists...">
-      </form>
-      {% if current_user.is_authenticated %}
-        <div class="user-chip">{{ current_user.username }} ({{ current_user.role }})</div>
-      {% else %}
-        <div class="user-chip"><a href="/login">Login</a> &nbsp;|&nbsp; <a href="/signup">Sign Up</a></div>
-      {% endif %}
+  <!-- Mini player for pages with playable tracks (artist page, dashboard, profile) -->
+  <div class="page-player" id="page-player" hidden>
+    <div class="pp-cover" id="pp-cover"></div>
+    <div class="pp-meta">
+      <div class="pp-title" id="pp-title"></div>
+      <div class="pp-artist" id="pp-artist"></div>
     </div>
-
-    <div class="content">
-      {% block content %}{% endblock %}
+    <button type="button" class="play-btn pp-toggle" id="pp-toggle" aria-label="Pause">
+      {{ svg_icon("pause", "pp-pause") }}{{ svg_icon("play", "pp-play") }}
+    </button>
+    <div class="pp-progress">
+      <span id="pp-time">0:00</span>
+      <div class="progress-bar" id="pp-bar" role="slider" tabindex="0" aria-label="Seek"
+           aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><div class="progress-fill" id="pp-fill"></div></div>
+      <span id="pp-duration">0:00</span>
     </div>
+    <span class="eq pp-eq" aria-hidden="true"><i></i><i></i><i></i></span>
   </div>
+  <audio id="page-audio" preload="none"></audio>
 
-  <div class="player-bar">
-    <div class="np-art"></div>
-    <div class="np-info">
-      <div class="np-title">Nothing playing</div>
-      <div class="np-artist">Pick a track to start</div>
+  <dialog class="modal confirm-modal" id="confirm-modal" aria-labelledby="confirm-title">
+    <div class="modal-head">
+      <div class="modal-heading"><h2 class="modal-title" id="confirm-title">Are you sure?</h2>
+        <div class="modal-subtitle" id="confirm-text"></div></div>
     </div>
-  </div>
+    <div class="confirm-actions">
+      <button type="button" class="pill-btn ghost" id="confirm-cancel">Cancel</button>
+      <button type="button" class="pill-btn danger" id="confirm-ok">Delete</button>
+    </div>
+  </dialog>
 
-  <script>
-    document.querySelectorAll("audio").forEach(function (audio) {
-      const canvas = document.querySelector('.canvas-visual[data-audio-id="' + audio.id + '"]');
-      audio.addEventListener("play", function () {
-        document.querySelectorAll("audio").forEach(function (other) { if (other !== audio) other.pause(); });
-        if (canvas) canvas.classList.add("playing");
-      });
-      audio.addEventListener("pause", function () { if (canvas) canvas.classList.remove("playing"); });
-      audio.addEventListener("ended", function () { if (canvas) canvas.classList.remove("playing"); });
-    });
-  </script>
+  <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
+  <script src="{{ url_for('static', filename='js/pages.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
