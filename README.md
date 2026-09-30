@@ -107,6 +107,18 @@ matches (within 4 s), so synced lyrics work offline. The slug comes from the MP3
 `challa-jab-tak-hai-jaan.lrc`. For a song LRCLIB doesn't have, drop your own `.lrc` file (lines like
 `[00:12.50] lyric text`) in that folder; local files always win. `instance/` isn't committed to git.
 
+### Deploying (e.g. Render)
+The database isn't committed (`instance/` is git-ignored), so on startup the app creates it and fills in the
+15 catalogue songs from `static/media/catalog.json`, which `generate_media.py` writes. Commit that file together
+with the media, and re-run `generate_media.py` after changing the catalogue. Every path in it matches the committed
+files exactly, including capitalization, which matters on Linux hosts. Startup is safe with several gunicorn workers.
+
+- Start command: `gunicorn app:app`
+- Set `SECRET_KEY` to a long random string.
+- Render's disk is wiped on each deploy, so accounts, likes, playlists and uploads reset. To keep them, attach a
+  persistent disk and set `SONORIA_DATABASE_URI=sqlite:////var/data/app.db` (uploads would also need to live on
+  that disk or in external storage).
+
 ### Make yourself an admin
 Open `instance/app.db` in DB Browser for SQLite. In the Execute SQL tab, run:
 ```sql

@@ -3,6 +3,7 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 from flask_cors import CORS
 from models import db, User, Track, PlayHistory, Like, Playlist, ExternalTrack, UserPlayCount, playlist_tracks, upgrade_schema
 from badges import get_user_genre_badge, record_genre_play, GENRE_BADGES
+from catalog import ensure_catalog, startup_lock
 from functools import wraps
 from recommend import recommend, dedupe_by_title, weighted_sample, rank_weight
 from concurrent.futures import ThreadPoolExecutor
@@ -18,15 +19,21 @@ import re as re_module
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "change-this-to-something-random"
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
+# Set SECRET_KEY in the host's environment (e.g. Render) so sessions can't be forged; the default is for local dev.
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-to-something-random")
+# Default: SQLite at instance/app.db. On Render, point this at a persistent disk to keep accounts across deploys,
+# e.g. SONORIA_DATABASE_URI=sqlite:////var/data/app.db
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("SONORIA_DATABASE_URI", "sqlite:///app.db")
 # Allow cross-origin calls to the JSON API only (e.g. a frontend served from another local port).
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
+# instance/ is git-ignored, so a fresh deploy doesn't have it yet
+os.makedirs(app.instance_path, exist_ok=True)
 db.init_app(app)
-with app.app_context():
+with app.app_context(), startup_lock(app):  # one gunicorn worker at a time
     db.create_all()
     upgrade_schema()
+    ensure_catalog(app)  # a fresh database (e.g. a new deploy) gets the 15 catalogue songs from catalog.json
 
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -804,7 +811,7 @@ def search_podcasts():
 
 # ---------- ARTIST ----------
 
-UPLOAD_FOLDER = os.path.join("static", "uploads")
+UPLOAD_FOLDER = os.path.join(app.root_path, "static", "uploads")  # absolute: works whatever the working directory
 COVER_FOLDER = os.path.join(UPLOAD_FOLDER, "covers")    # artists' cover art
 CANVAS_FOLDER = os.path.join(UPLOAD_FOLDER, "canvas")   # artists' canvas videos
 ALLOWED_EXTENSIONS = {"mp3", "wav", "m4a"}
@@ -1021,7 +1028,7 @@ def delete_track(track_id):
     if in_uploads and upload.is_file() and not Track.query.filter_by(audio_file=audio_file).count():
         upload.unlink()
     for path in extras:  # the artist's own cover / canvas files belong to this track alone
-        Path(path.lstrip("/")).unlink(missing_ok=True)
+        Path(app.root_path, path.lstrip("/")).unlink(missing_ok=True)
     if wants_json():
         return jsonify({"deleted": track_id})
     return redirect(url_for("artist_dashboard", tab="tracks"))

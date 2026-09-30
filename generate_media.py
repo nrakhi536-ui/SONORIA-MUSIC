@@ -22,7 +22,6 @@ import math
 import re
 import os
 import random
-import secrets
 import subprocess
 from pathlib import Path
 
@@ -30,6 +29,8 @@ import imageio_ffmpeg
 import numpy as np
 from moviepy import AudioFileClip, VideoClip
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from catalog import CATALOG_FILE, exact_case_exists, write_catalog
 
 # =====================================================================
 # EDIT HERE: one entry per MP3 file in static/media/audio/
@@ -71,7 +72,6 @@ LOOP_FADE_SECONDS = 1.0   # envelope crossfade that makes the last frame flow in
 SAMPLE_RATE = 22050
 RING_BARS = 72
 WAVE_POINTS = 160         # samples per frame for the oscilloscope visualizer
-UNKNOWN_ARTIST = "Unknown Artist"
 
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -498,20 +498,6 @@ def site_path(file):
     return "/" + file.relative_to(ROOT).as_posix()
 
 
-def exact_case_exists(stored_path):
-    """True when stored_path names an existing file with exactly this spelling and case.
-
-    Windows ignores case, so Path.exists() alone would pass /static/Media/... or baby doll.MP3,
-    which then 404 on a case-sensitive host.
-    """
-    current = ROOT
-    for part in stored_path.lstrip("/").split("/"):
-        if not current.is_dir() or part not in os.listdir(current):
-            return False
-        current = current / part
-    return current.is_file()
-
-
 def verify_database_paths():
     """Checks every catalogue row's audio, cover and video path against the files on disk."""
     from app import app
@@ -529,44 +515,15 @@ def verify_database_paths():
 
 
 def seed_database(entries):
-    """Upserts one approved Track per MP3 (keyed by its audio filename), each owned by an artist User."""
+    """Upserts the catalogue into the database (the same code the app runs on startup, see catalog.py)."""
     from app import app
-    from models import db, User, Track, upgrade_schema
+    from catalog import sync_catalog
+    from models import Track
 
     with app.app_context():
-        db.create_all()
-        upgrade_schema()
-        created = updated = 0
-        for info in entries:
-            artist_name = info["artist"] or UNKNOWN_ARTIST
-            artist = User.query.filter_by(username=artist_name).first()
-            if not artist:
-                artist = User(username=artist_name, role="artist")
-                artist.set_password(secrets.token_urlsafe(24))   # catalogue account; nobody logs in as it
-                db.session.add(artist)
-                db.session.flush()
-
-            track = Track.query.filter(Track.section.isnot(None), Track.audio_file == info["file"]).first()
-            if track:
-                updated += 1
-            else:
-                track = Track(play_count=0)
-                db.session.add(track)
-                created += 1
-            track.title = info["title"]
-            track.artist_id = artist.id
-            track.album = info["album"]
-            track.genre = info["genre"]
-            track.section = info["section"]
-            track.stream_url = info["stream_url"]
-            track.cover_art = info["cover"]
-            track.canvas_video = info["video_url"]
-            track.audio_file = info["file"]
-            track.duration_ms = info["duration_ms"]
-            track.approved = True
-        db.session.commit()
+        report = sync_catalog(entries)
         total = Track.query.filter(Track.section.isnot(None)).count()
-    print(f"Database: {created} created, {updated} updated, {total} local catalogue tracks in total.")
+    print(f"Database: {report['created']} created, {report['updated']} updated, {total} local catalogue tracks in total.")
 
 
 COVER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
@@ -650,6 +607,8 @@ def main():
             "video_url": site_path(video_path),
         })
 
+    write_catalog(entries)
+    print(f"Wrote {CATALOG_FILE.relative_to(ROOT).as_posix()}: commit it with the media so deploys seed themselves.")
     seed_database(entries)
     verify_database_paths()
 
